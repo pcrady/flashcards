@@ -24,7 +24,10 @@ class DeckDetailScreen extends StatefulWidget {
   State<DeckDetailScreen> createState() => _DeckDetailScreenState();
 }
 
+enum _SortMode { added, mostMissed }
+
 class _DeckDetailScreenState extends State<DeckDetailScreen> {
+  _SortMode _sortMode = _SortMode.added;
   final _nativeController = TextEditingController();
   final _targetController = TextEditingController();
   final _nativeFocus = FocusNode();
@@ -119,6 +122,18 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
       await widget.store.save();
       if (mounted) setState(() {});
     }
+  }
+
+  /// Cards in display order for the current sort mode. Sorting is applied
+  /// to a copy — the stored order ("as added") is never mutated.
+  List<CardItem> get _sortedCards {
+    if (_sortMode == _SortMode.added) return deck.cards;
+    return List.of(deck.cards)
+      ..sort((a, b) {
+        final byWrong = b.timesWrong.compareTo(a.timesWrong);
+        if (byWrong != 0) return byWrong;
+        return a.timesCorrect.compareTo(b.timesCorrect);
+      });
   }
 
   String _norm(String s) => s.toLowerCase().trim();
@@ -294,6 +309,52 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                   ),
                 ),
               ),
+              // --- Sort bar ---
+              if (deck.cards.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+                  child: Row(
+                    children: [
+                      Text(
+                        '${deck.cards.length} '
+                        '${deck.cards.length == 1 ? "card" : "cards"}',
+                        style: TextStyle(
+                            color: SprakTheme.inkSoft, fontSize: 13),
+                      ),
+                      const Spacer(),
+                      PopupMenuButton<_SortMode>(
+                        initialValue: _sortMode,
+                        onSelected: (v) => setState(() => _sortMode = v),
+                        color: SprakTheme.surface,
+                        itemBuilder: (context) => const [
+                          PopupMenuItem(
+                            value: _SortMode.added,
+                            child: Text('As added'),
+                          ),
+                          PopupMenuItem(
+                            value: _SortMode.mostMissed,
+                            child: Text('Most missed first'),
+                          ),
+                        ],
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.sort,
+                                size: 18, color: SprakTheme.inkSoft),
+                            const SizedBox(width: 6),
+                            Text(
+                              _sortMode == _SortMode.added
+                                  ? 'Sort: As added'
+                                  : 'Sort: Most missed',
+                              style: TextStyle(
+                                  color: SprakTheme.inkSoft, fontSize: 13),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               // --- Card list ---
               Expanded(
                 child: deck.cards.isEmpty
@@ -307,7 +368,7 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                         separatorBuilder: (_, i) =>
                             const SizedBox(height: 8),
                         itemBuilder: (context, i) {
-                          final card = deck.cards[i];
+                          final card = _sortedCards[i];
                           return Card(
                             child: ListTile(
                               contentPadding: const EdgeInsets.symmetric(
@@ -328,16 +389,38 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                                     style: TextStyle(
                                         color: SprakTheme.inkSoft)),
                               ),
-                              trailing: IconButton(
-                                icon: const Icon(Icons.delete_outline,
-                                    size: 20),
-                                color: SprakTheme.inkSoft,
-                                tooltip: 'Remove card',
-                                onPressed: () async {
-                                  deck.cards.removeAt(i);
-                                  await widget.store.save();
-                                  setState(() {});
-                                },
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  _StatChip(
+                                    icon: Icons.check,
+                                    color: SprakTheme.success,
+                                    count: card.timesCorrect,
+                                    tooltip: 'Answered correctly '
+                                        '${card.timesCorrect} times',
+                                  ),
+                                  const SizedBox(width: 6),
+                                  _StatChip(
+                                    icon: Icons.close,
+                                    color: SprakTheme.danger,
+                                    count: card.timesWrong,
+                                    tooltip: 'Answered incorrectly '
+                                        '${card.timesWrong} times',
+                                  ),
+                                  const SizedBox(width: 10),
+                                  IconButton(
+                                    icon: const Icon(Icons.delete_outline,
+                                        size: 20),
+                                    color: SprakTheme.inkSoft,
+                                    tooltip: 'Remove card',
+                                    onPressed: () async {
+                                      deck.cards.removeWhere(
+                                          (c) => c.id == card.id);
+                                      await widget.store.save();
+                                      setState(() {});
+                                    },
+                                  ),
+                                ],
                               ),
                             ),
                           );
@@ -346,6 +429,53 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Small ✓/✗ counter pill shown next to each card. Muted while the count
+/// is still zero.
+class _StatChip extends StatelessWidget {
+  final IconData icon;
+  final Color color;
+  final int count;
+  final String tooltip;
+
+  const _StatChip({
+    required this.icon,
+    required this.color,
+    required this.count,
+    required this.tooltip,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final active = count > 0;
+    final c = active ? color : SprakTheme.inkSoft;
+    return Tooltip(
+      message: tooltip,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: c.withValues(alpha: active ? 0.12 : 0.06),
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 13, color: c),
+            const SizedBox(width: 4),
+            Text(
+              '$count',
+              style: TextStyle(
+                color: c,
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ],
         ),
       ),
     );

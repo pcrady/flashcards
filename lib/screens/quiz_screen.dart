@@ -1,6 +1,7 @@
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../models.dart';
 import '../services/tts_service.dart';
@@ -8,10 +9,18 @@ import '../storage.dart';
 import '../theme.dart';
 import '../widgets/chat_box.dart';
 
-enum _Phase { asking, answered }
+enum _Phase { asking, answered, groupCleared, deckCleared }
 
-/// Quiz workspace: shows a prompt in one language, checks the typed answer
-/// against the other. An AI tutor conversation box sits underneath.
+const int _kGroupSize = 6;
+
+/// One quiz task: a card asked in a specific direction.
+typedef _Task = ({CardItem card, bool askInTarget});
+
+/// Quiz workspace. Cards are shuffled and dealt in groups of six; every card
+/// must be answered correctly in BOTH directions before the next group
+/// starts, and missed tasks go back into the group's rotation. Clearing the
+/// whole deck ends with a celebration. An AI tutor conversation box sits
+/// underneath.
 class QuizScreen extends StatefulWidget {
   final DeckStore store;
   final Deck deck;
@@ -26,24 +35,30 @@ class _QuizScreenState extends State<QuizScreen> {
   final _answerFocus = FocusNode();
   final _random = Random();
 
-  late List<CardItem> _queue;
-  int _index = 0;
-  bool _askInTarget = false; // prompt shown in target language?
+  late List<List<CardItem>> _groups;
+  int _groupIndex = 0;
+
+  /// Tasks in the current group not yet answered correctly. Each card
+  /// appears twice: once per direction.
+  late List<_Task> _remaining;
+
   _Phase _phase = _Phase.asking;
   bool? _lastCorrect;
   int _correctCount = 0;
   int _wrongCount = 0;
 
   Deck get deck => widget.deck;
-  CardItem get card => _queue[_index];
+  List<CardItem> get _group => _groups[_groupIndex];
+  _Task get _task => _remaining.first;
+  CardItem get card => _task.card;
+  bool get _askInTarget => _task.askInTarget;
   String get prompt => _askInTarget ? card.target : card.native;
   String get expected => _askInTarget ? card.native : card.target;
 
   @override
   void initState() {
     super.initState();
-    _queue = List.of(deck.cards)..shuffle(_random);
-    _rollDirection();
+    _buildGroups();
   }
 
   @override
@@ -54,8 +69,38 @@ class _QuizScreenState extends State<QuizScreen> {
     super.dispose();
   }
 
-  void _rollDirection() {
-    _askInTarget = _random.nextBool();
+  /// Cleared tasks (card × direction) across all groups so far.
+  int get _tasksDone {
+    var done = 0;
+    for (var g = 0; g < _groupIndex; g++) {
+      done += _groups[g].length * 2;
+    }
+    return done + _group.length * 2 - _remaining.length;
+  }
+
+  int get _tasksTotal => deck.cards.length * 2;
+
+  double get _deckProgress =>
+      _tasksTotal == 0 ? 0 : _tasksDone / _tasksTotal;
+
+  /// Shuffles the whole deck and partitions it into groups of six.
+  void _buildGroups() {
+    final all = List.of(deck.cards)..shuffle(_random);
+    _groups = [
+      for (var i = 0; i < all.length; i += _kGroupSize)
+        all.sublist(i, min(i + _kGroupSize, all.length)),
+    ];
+    _groupIndex = 0;
+    _startGroup();
+  }
+
+  void _startGroup() {
+    _remaining = [
+      for (final c in _group) ...[
+        (card: c, askInTarget: true),
+        (card: c, askInTarget: false),
+      ],
+    ]..shuffle(_random);
   }
 
   String _normalize(String s) => s
@@ -80,20 +125,62 @@ class _QuizScreenState extends State<QuizScreen> {
       }
     });
     widget.store.save();
-    // Keep focus in the (now read-only) field so Enter advances to the
-    // next card without reaching for the mouse.
+    // Keep focus in the (now read-only) field so Enter advances without
+    // reaching for the mouse.
     _answerFocus.requestFocus();
     // Always let the learner hear the target-language side.
     TtsService().speak(card.target, ttsLocaleFor(deck.targetLanguage));
   }
 
   void _next() {
+    if (_phase == _Phase.groupCleared) {
+      _advanceGroup();
+      return;
+    }
+    if (_phase != _Phase.answered) return;
+
+    if (_lastCorrect == true) {
+      _remaining.removeAt(0); // this direction mastered
+    } else {
+      _remaining.add(_remaining.removeAt(0)); // retry later in the group
+    }
+
+    if (_remaining.isEmpty) {
+      final deckDone = _groupIndex + 1 >= _groups.length;
+      setState(() {
+        _phase = deckDone ? _Phase.deckCleared : _Phase.groupCleared;
+        _lastCorrect = null;
+        _answerController.clear();
+      });
+      return;
+    }
+
     setState(() {
-      _index = (_index + 1) % _queue.length;
-      if (_index == 0) _queue.shuffle(_random);
-      _rollDirection();
       _phase = _Phase.asking;
       _lastCorrect = null;
+      _answerController.clear();
+    });
+    _answerFocus.requestFocus();
+  }
+
+  void _advanceGroup() {
+    setState(() {
+      _groupIndex++;
+      _startGroup();
+      _phase = _Phase.asking;
+      _lastCorrect = null;
+      _answerController.clear();
+    });
+    _answerFocus.requestFocus();
+  }
+
+  void _studyAgain() {
+    setState(() {
+      _buildGroups();
+      _phase = _Phase.asking;
+      _lastCorrect = null;
+      _correctCount = 0;
+      _wrongCount = 0;
       _answerController.clear();
     });
     _answerFocus.requestFocus();
@@ -109,7 +196,27 @@ class _QuizScreenState extends State<QuizScreen> {
                 style: const TextStyle(fontSize: 22)),
             const SizedBox(width: 10),
             Text(deck.name),
+            const SizedBox(width: 14),
+            Text(
+              'Group ${_groupIndex + 1} of ${_groups.length}'
+              '  ·  $_tasksDone of $_tasksTotal',
+              style: TextStyle(color: SprakTheme.inkSoft, fontSize: 13),
+            ),
           ],
+        ),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(5),
+          child: TweenAnimationBuilder<double>(
+            tween: Tween(end: _deckProgress),
+            duration: const Duration(milliseconds: 350),
+            curve: Curves.easeOutCubic,
+            builder: (context, value, _) => LinearProgressIndicator(
+              value: value,
+              minHeight: 5,
+              backgroundColor: SprakTheme.panel,
+              color: SprakTheme.fjord,
+            ),
+          ),
         ),
         actions: [
           _ScorePill(
@@ -133,117 +240,11 @@ class _QuizScreenState extends State<QuizScreen> {
                 constraints: const BoxConstraints(maxWidth: 560),
                 child: Padding(
                   padding: const EdgeInsets.all(24),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Text(
-                        _askInTarget
-                            ? 'What does this mean in ${deck.nativeLanguage}?'
-                            : 'How do you say this in ${deck.targetLanguage}?',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          color: SprakTheme.inkSoft,
-                          fontSize: 15,
-                          letterSpacing: 0.3,
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Flexible(
-                            child: Text(
-                              prompt,
-                              textAlign: TextAlign.center,
-                              style: SprakTheme.vocab(size: 44),
-                            ),
-                          ),
-                          if (_askInTarget) ...[
-                            const SizedBox(width: 12),
-                            IconButton(
-                              icon: const Icon(Icons.volume_up_outlined,
-                                  size: 30),
-                              color: SprakTheme.fjord,
-                              tooltip: 'Play audio',
-                              onPressed: () => TtsService().speak(card.target,
-                                  ttsLocaleFor(deck.targetLanguage)),
-                            ),
-                          ],
-                        ],
-                      ),
-                      const SizedBox(height: 30),
-                      TextField(
-                        controller: _answerController,
-                        focusNode: _answerFocus,
-                        autofocus: true,
-                        readOnly: _phase != _Phase.asking,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(fontSize: 22),
-                        decoration: InputDecoration(
-                          hintText: _askInTarget
-                              ? deck.nativeLanguage
-                              : deck.targetLanguage,
-                          contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 16, vertical: 18),
-                        ),
-                        onSubmitted: (_) =>
-                            _phase == _Phase.asking ? _check() : _next(),
-                      ),
-                      const SizedBox(height: 20),
-                      if (_phase == _Phase.asking)
-                        FilledButton(
-                          onPressed: _check,
-                          child: const Text('Check'),
-                        )
-                      else ...[
-                        Container(
-                          padding: const EdgeInsets.all(16),
-                          decoration: BoxDecoration(
-                            color: _lastCorrect!
-                                ? SprakTheme.success.withValues(alpha: 0.10)
-                                : Theme.of(context)
-                                    .colorScheme
-                                    .error
-                                    .withValues(alpha: 0.08),
-                            borderRadius: BorderRadius.circular(14),
-                            border: Border.all(
-                              color: _lastCorrect!
-                                  ? SprakTheme.success.withValues(alpha: 0.4)
-                                  : Theme.of(context)
-                                      .colorScheme
-                                      .error
-                                      .withValues(alpha: 0.35),
-                            ),
-                          ),
-                          child: Column(
-                            children: [
-                              Text(
-                                _lastCorrect! ? 'Correct!' : 'Not quite.',
-                                style: TextStyle(
-                                  fontWeight: FontWeight.w800,
-                                  fontSize: 16,
-                                  color: _lastCorrect!
-                                      ? SprakTheme.success
-                                      : Theme.of(context).colorScheme.error,
-                                ),
-                              ),
-                              const SizedBox(height: 6),
-                              Text('$prompt  →  $expected',
-                                  textAlign: TextAlign.center,
-                                  style: const TextStyle(fontSize: 17)),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(height: 14),
-                        FilledButton.icon(
-                          onPressed: _next,
-                          icon: const Icon(Icons.arrow_forward, size: 18),
-                          label: const Text('Next  ⏎'),
-                        ),
-                      ],
-                    ],
-                  ),
+                  child: switch (_phase) {
+                    _Phase.deckCleared => _buildDeckCleared(),
+                    _Phase.groupCleared => _buildGroupCleared(),
+                    _ => _buildQuestion(context),
+                  },
                 ),
               ),
             ),
@@ -255,12 +256,249 @@ class _QuizScreenState extends State<QuizScreen> {
             child: ChatBox(
               targetLanguage: deck.targetLanguage,
               nativeLanguage: deck.nativeLanguage,
-              currentContextBuilder: () =>
-                  '"${card.target}" (${deck.targetLanguage}) = '
-                  '"${card.native}" (${deck.nativeLanguage})',
+              currentContextBuilder: () => (_phase == _Phase.groupCleared ||
+                      _phase == _Phase.deckCleared)
+                  ? 'reviewing completed cards'
+                  : '"${card.target}" (${deck.targetLanguage}) = '
+                      '"${card.native}" (${deck.nativeLanguage})',
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  /// Dots showing how many tasks (card × direction) in the current group
+  /// are mastered.
+  Widget _buildGroupDots() {
+    final total = _group.length * 2;
+    final clearedCount = total - _remaining.length;
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        for (var i = 0; i < total; i++)
+          Container(
+            width: 9,
+            height: 9,
+            margin: const EdgeInsets.symmetric(horizontal: 3),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: i < clearedCount ? SprakTheme.success : null,
+              border: i < clearedCount
+                  ? null
+                  : Border.all(color: SprakTheme.line, width: 1.5),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildQuestion(BuildContext context) {
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _buildGroupDots(),
+        const SizedBox(height: 20),
+        Text(
+          _askInTarget
+              ? 'What does this mean in ${deck.nativeLanguage}?'
+              : 'How do you say this in ${deck.targetLanguage}?',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: SprakTheme.inkSoft,
+            fontSize: 15,
+            letterSpacing: 0.3,
+          ),
+        ),
+        const SizedBox(height: 14),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Flexible(
+              child: Text(
+                prompt,
+                textAlign: TextAlign.center,
+                style: SprakTheme.vocab(size: 44),
+              ),
+            ),
+            if (_askInTarget) ...[
+              const SizedBox(width: 12),
+              IconButton(
+                icon: const Icon(Icons.volume_up_outlined, size: 30),
+                color: SprakTheme.fjord,
+                tooltip: 'Play audio',
+                onPressed: () => TtsService()
+                    .speak(card.target, ttsLocaleFor(deck.targetLanguage)),
+              ),
+            ],
+          ],
+        ),
+        const SizedBox(height: 30),
+        TextField(
+          controller: _answerController,
+          focusNode: _answerFocus,
+          autofocus: true,
+          readOnly: _phase != _Phase.asking,
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 22),
+          decoration: InputDecoration(
+            hintText: _askInTarget ? deck.nativeLanguage : deck.targetLanguage,
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
+          ),
+          onSubmitted: (_) => _phase == _Phase.asking ? _check() : _next(),
+        ),
+        const SizedBox(height: 20),
+        if (_phase == _Phase.asking)
+          FilledButton(
+            onPressed: _check,
+            child: const Text('Check'),
+          )
+        else ...[
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: _lastCorrect!
+                  ? SprakTheme.success.withValues(alpha: 0.10)
+                  : Theme.of(context)
+                      .colorScheme
+                      .error
+                      .withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: _lastCorrect!
+                    ? SprakTheme.success.withValues(alpha: 0.4)
+                    : Theme.of(context)
+                        .colorScheme
+                        .error
+                        .withValues(alpha: 0.35),
+              ),
+            ),
+            child: Column(
+              children: [
+                Text(
+                  _lastCorrect!
+                      ? 'Correct!'
+                      : 'Not quite — it will come back around.',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 16,
+                    color: _lastCorrect!
+                        ? SprakTheme.success
+                        : Theme.of(context).colorScheme.error,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text('$prompt  →  $expected',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 17)),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+          FilledButton.icon(
+            onPressed: _next,
+            icon: const Icon(Icons.arrow_forward, size: 18),
+            label: const Text('Next  ⏎'),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildGroupCleared() {
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.enter): _next,
+        const SingleActivator(LogicalKeyboardKey.numpadEnter): _next,
+      },
+      child: Focus(
+        autofocus: true,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Text('🎉', style: TextStyle(fontSize: 52)),
+            const SizedBox(height: 12),
+            Text('Group cleared!',
+                style: Theme.of(context).textTheme.headlineSmall),
+            const SizedBox(height: 8),
+            Text(
+              'All ${_group.length} cards answered correctly in both '
+              'languages.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: SprakTheme.inkSoft),
+            ),
+            const SizedBox(height: 24),
+            FilledButton.icon(
+              onPressed: _next,
+              icon: const Icon(Icons.arrow_forward, size: 18),
+              label: const Text('Next group  ⏎'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDeckCleared() {
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.enter): _studyAgain,
+        const SingleActivator(LogicalKeyboardKey.numpadEnter): _studyAgain,
+        const SingleActivator(LogicalKeyboardKey.escape): () =>
+            Navigator.of(context).pop(),
+      },
+      child: Focus(
+        autofocus: true,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Text('🎊 🏆 🎊', style: TextStyle(fontSize: 56)),
+            const SizedBox(height: 16),
+            ShaderMask(
+              shaderCallback: (bounds) =>
+                  SprakTheme.aurora.createShader(bounds),
+              blendMode: BlendMode.srcIn,
+              child: Text(
+                'Deck complete!',
+                style: SprakTheme.vocab(size: 40).copyWith(
+                    color: Colors.white, fontWeight: FontWeight.w700),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'Every card in “${deck.name}” cleared in both languages — '
+              '${deck.cards.length} cards, ${deck.cards.length * 2} answers.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: SprakTheme.inkSoft, fontSize: 15),
+            ),
+            const SizedBox(height: 28),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                FilledButton.icon(
+                  onPressed: _studyAgain,
+                  icon: const Icon(Icons.replay, size: 18),
+                  label: const Text('Study again  ⏎'),
+                ),
+                const SizedBox(width: 12),
+                OutlinedButton.icon(
+                  onPressed: () => Navigator.of(context).pop(),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: SprakTheme.ink,
+                    side: const BorderSide(color: SprakTheme.line),
+                    shape: const StadiumBorder(),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 22, vertical: 16),
+                  ),
+                  icon: const Icon(Icons.home_outlined, size: 18),
+                  label: const Text('Back to sets'),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
