@@ -1,0 +1,374 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+
+import 'claude_service.dart';
+
+class LlmProvider {
+  final String id;
+  final String label;
+  final String defaultModel;
+  final bool keyRequired;
+  const LlmProvider(this.id, this.label, this.defaultModel,
+      {this.keyRequired = true});
+}
+
+/// Providers available for the tutor chat. "Custom" is any
+/// OpenAI-compatible endpoint: Ollama, LM Studio, OpenRouter, Groq, etc.
+const List<LlmProvider> kLlmProviders = [
+  LlmProvider('anthropic', 'Anthropic (Claude)', 'claude-opus-4-8'),
+  LlmProvider('openai', 'OpenAI', 'gpt-4o'),
+  LlmProvider('gemini', 'Google Gemini', 'gemini-2.0-flash'),
+  LlmProvider('custom', 'Custom (OpenAI-compatible)', 'llama3.1',
+      keyRequired: false),
+];
+
+/// Dispatches tutor-chat requests to whichever LLM provider is configured
+/// in Settings. Translation always uses Claude (see ClaudeService).
+class LlmService {
+  static const providerPref = 'chat_provider';
+  static const customBaseUrlPref = 'custom_base_url';
+  static const defaultCustomBaseUrl = 'http://localhost:11434/v1';
+
+  static String modelPref(String providerId) => 'chat_model_$providerId';
+  static String keyPref(String providerId) => '${providerId}_api_key';
+
+  static LlmProvider providerById(String id) => kLlmProviders.firstWhere(
+        (p) => p.id == id,
+        orElse: () => kLlmProviders.first,
+      );
+
+  static Future<LlmProvider> activeProvider() async {
+    final prefs = await SharedPreferences.getInstance();
+    return providerById(prefs.getString(providerPref) ?? 'anthropic');
+  }
+
+  /// Sends a chat turn for the language-tutor conversation box.
+  static Future<String> chat({
+    required List<ChatMessage> history,
+    required String targetLanguage,
+    required String nativeLanguage,
+    String? currentContext,
+  }) {
+    return _complete(
+      system: _tutorSystemPrompt(
+        targetLanguage: targetLanguage,
+        nativeLanguage: nativeLanguage,
+        currentContext: currentContext,
+      ),
+      history: history,
+    );
+  }
+
+  /// Translates [text] from [from] into [to], returning only the translation.
+  static Future<String> translate({
+    required String text,
+    required String from,
+    required String to,
+  }) {
+    return _complete(
+      system: 'You are a translation engine. Translate the text the user '
+          'provides from $from into $to. Respond with ONLY the translation — '
+          'no explanations, no quotes, no transliteration.',
+      history: [ChatMessage('user', text)],
+      maxTokens: 256,
+    );
+  }
+
+  /// Runs one completion against whichever provider is configured.
+  static Future<String> _complete({
+    required String system,
+    required List<ChatMessage> history,
+    int maxTokens = 1024,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    final provider = providerById(prefs.getString(providerPref) ?? 'anthropic');
+    final storedModel = prefs.getString(modelPref(provider.id))?.trim();
+    final model = (storedModel == null || storedModel.isEmpty)
+        ? provider.defaultModel
+        : storedModel;
+
+    switch (provider.id) {
+      case 'anthropic':
+        return ClaudeService.complete(
+          system: system,
+          model: model,
+          maxTokens: maxTokens,
+          messages: [
+            for (final m in history) {'role': m.role, 'content': m.text},
+          ],
+        );
+      case 'gemini':
+        return _gemini(
+          apiKey: prefs.getString(keyPref('gemini'))?.trim(),
+          model: model,
+          system: system,
+          history: history,
+        );
+      case 'openai':
+        return _openAiCompatible(
+          baseUrl: 'https://api.openai.com/v1',
+          apiKey: prefs.getString(keyPref('openai'))?.trim(),
+          keyRequired: true,
+          providerLabel: 'OpenAI',
+          model: model,
+          system: system,
+          history: history,
+        );
+      case 'custom':
+      default:
+        return _openAiCompatible(
+          baseUrl: (prefs.getString(customBaseUrlPref)?.trim().isNotEmpty ??
+                  false)
+              ? prefs.getString(customBaseUrlPref)!.trim()
+              : defaultCustomBaseUrl,
+          apiKey: prefs.getString(keyPref('custom'))?.trim(),
+          keyRequired: false,
+          providerLabel: 'the custom endpoint',
+          model: model,
+          system: system,
+          history: history,
+        );
+    }
+  }
+
+  /// Lists model IDs available from a provider, using the (possibly
+  /// unsaved) key/URL values passed in from the settings screen.
+  static Future<List<String>> listModels({
+    required String providerId,
+    String? apiKey,
+    String? baseUrl,
+  }) async {
+    final key = apiKey?.trim();
+    switch (providerId) {
+      case 'anthropic':
+        final k = (key == null || key.isEmpty)
+            ? await ClaudeService.apiKey()
+            : key;
+        if (k == null) {
+          throw LlmException('Enter an Anthropic API key first.');
+        }
+        final body = await _getJson(
+          Uri.parse('https://api.anthropic.com/v1/models?limit=100'),
+          headers: {'x-api-key': k, 'anthropic-version': '2023-06-01'},
+        );
+        return [
+          for (final m in body['data'] as List<dynamic>) m['id'] as String,
+        ];
+      case 'gemini':
+        if (key == null || key.isEmpty) {
+          throw LlmException('Enter a Gemini API key first.');
+        }
+        final body = await _getJson(
+          Uri.parse('https://generativelanguage.googleapis.com/'
+              'v1beta/models?pageSize=200'),
+          headers: {'x-goog-api-key': key},
+        );
+        return [
+          for (final m in body['models'] as List<dynamic>)
+            if ((m['supportedGenerationMethods'] as List<dynamic>? ?? [])
+                .contains('generateContent'))
+              (m['name'] as String).replaceFirst('models/', ''),
+        ];
+      case 'openai':
+      case 'custom':
+      default:
+        if (providerId == 'openai' && (key == null || key.isEmpty)) {
+          throw LlmException('Enter an OpenAI API key first.');
+        }
+        final base = providerId == 'openai'
+            ? 'https://api.openai.com/v1'
+            : ((baseUrl == null || baseUrl.trim().isEmpty)
+                ? defaultCustomBaseUrl
+                : baseUrl.trim());
+        final body = await _getJson(
+          Uri.parse('${base.replaceAll(RegExp(r'/+$'), '')}/models'),
+          headers: {
+            if (key != null && key.isNotEmpty) 'authorization': 'Bearer $key',
+          },
+        );
+        return [
+          for (final m in body['data'] as List<dynamic>) m['id'] as String,
+        ];
+    }
+  }
+
+  static Future<dynamic> _getJson(Uri uri,
+      {required Map<String, String> headers}) async {
+    final http.Response resp;
+    try {
+      resp = await http
+          .get(uri, headers: headers)
+          .timeout(const Duration(seconds: 30));
+    } on SocketException {
+      throw LlmException('Could not reach ${uri.host} — check the URL and '
+          'your connection.');
+    }
+    final dynamic body;
+    try {
+      body = jsonDecode(utf8.decode(resp.bodyBytes));
+    } catch (_) {
+      throw LlmException(
+          'Unexpected response from ${uri.host} (HTTP ${resp.statusCode}).');
+    }
+    if (resp.statusCode != 200) {
+      final msg = (body is Map && body['error'] is Map)
+          ? body['error']['message'] as String? ?? 'Unknown API error'
+          : 'API error (HTTP ${resp.statusCode})';
+      throw LlmException(msg);
+    }
+    return body;
+  }
+
+  static String _tutorSystemPrompt({
+    required String targetLanguage,
+    required String nativeLanguage,
+    String? currentContext,
+  }) {
+    final system = StringBuffer()
+      ..writeln('You are a friendly, expert $targetLanguage language tutor '
+          'inside a flashcard app called språk. The learner speaks '
+          '$nativeLanguage and is learning $targetLanguage.')
+      ..writeln('Answer questions about vocabulary, grammar, pronunciation, '
+          'and usage. Keep answers short and practical, and include '
+          '$targetLanguage examples with $nativeLanguage glosses where '
+          'helpful.');
+    if (currentContext != null && currentContext.isNotEmpty) {
+      system.writeln('The learner is currently studying: $currentContext');
+    }
+    return system.toString();
+  }
+
+  static Future<String> _openAiCompatible({
+    required String baseUrl,
+    required String? apiKey,
+    required bool keyRequired,
+    required String providerLabel,
+    required String model,
+    required String system,
+    required List<ChatMessage> history,
+  }) async {
+    if (keyRequired && (apiKey == null || apiKey.isEmpty)) {
+      throw LlmException(
+          'No $providerLabel API key set. Add one in Settings (gear icon).');
+    }
+
+    final uri = Uri.parse(
+        '${baseUrl.replaceAll(RegExp(r'/+$'), '')}/chat/completions');
+    final http.Response resp;
+    try {
+      resp = await http
+          .post(
+            uri,
+            headers: {
+              'content-type': 'application/json',
+              if (apiKey != null && apiKey.isNotEmpty)
+                'authorization': 'Bearer $apiKey',
+            },
+            body: jsonEncode({
+              'model': model,
+              'messages': [
+                {'role': 'system', 'content': system},
+                for (final m in history)
+                  {'role': m.role, 'content': m.text},
+              ],
+            }),
+          )
+          .timeout(const Duration(seconds: 120));
+    } on SocketException {
+      throw LlmException(
+          'Could not reach $providerLabel at $baseUrl — check the URL and '
+          'your connection.');
+    }
+
+    final dynamic body;
+    try {
+      body = jsonDecode(utf8.decode(resp.bodyBytes));
+    } catch (_) {
+      throw LlmException(
+          'Unexpected response from $providerLabel (HTTP ${resp.statusCode}).');
+    }
+    if (resp.statusCode != 200) {
+      final msg = (body is Map && body['error'] is Map)
+          ? body['error']['message'] as String? ?? 'Unknown API error'
+          : 'API error (HTTP ${resp.statusCode})';
+      throw LlmException(msg);
+    }
+
+    final content = body['choices']?[0]?['message']?['content'];
+    if (content is! String || content.trim().isEmpty) {
+      throw LlmException('Empty response from $providerLabel.');
+    }
+    return content.trim();
+  }
+
+  static Future<String> _gemini({
+    required String? apiKey,
+    required String model,
+    required String system,
+    required List<ChatMessage> history,
+  }) async {
+    if (apiKey == null || apiKey.isEmpty) {
+      throw LlmException(
+          'No Gemini API key set. Add one in Settings (gear icon).');
+    }
+
+    final uri = Uri.parse('https://generativelanguage.googleapis.com/'
+        'v1beta/models/$model:generateContent');
+    final http.Response resp;
+    try {
+      resp = await http
+          .post(
+            uri,
+            headers: {
+              'content-type': 'application/json',
+              'x-goog-api-key': apiKey,
+            },
+            body: jsonEncode({
+              'system_instruction': {
+                'parts': [
+                  {'text': system},
+                ],
+              },
+              'contents': [
+                for (final m in history)
+                  {
+                    'role': m.role == 'assistant' ? 'model' : 'user',
+                    'parts': [
+                      {'text': m.text},
+                    ],
+                  },
+              ],
+            }),
+          )
+          .timeout(const Duration(seconds: 120));
+    } on SocketException {
+      throw LlmException('Network error — check your connection.');
+    }
+
+    final dynamic body;
+    try {
+      body = jsonDecode(utf8.decode(resp.bodyBytes));
+    } catch (_) {
+      throw LlmException(
+          'Unexpected response from Gemini (HTTP ${resp.statusCode}).');
+    }
+    if (resp.statusCode != 200) {
+      final msg = (body is Map && body['error'] is Map)
+          ? body['error']['message'] as String? ?? 'Unknown API error'
+          : 'API error (HTTP ${resp.statusCode})';
+      throw LlmException(msg);
+    }
+
+    final parts = body['candidates']?[0]?['content']?['parts'];
+    if (parts is! List) throw LlmException('Empty response from Gemini.');
+    final text = parts
+        .map((p) => p is Map ? (p['text'] as String? ?? '') : '')
+        .join()
+        .trim();
+    if (text.isEmpty) throw LlmException('Empty response from Gemini.');
+    return text;
+  }
+}
