@@ -8,6 +8,8 @@ import '../services/llm_service.dart';
 import '../services/tts_service.dart';
 import '../storage.dart';
 import '../theme.dart';
+import '../widgets/ai_deck_edit_dialog.dart';
+import '../widgets/rename_deck_dialog.dart';
 import 'quiz_screen.dart';
 
 /// Shows a deck's cards and lets the user add new ones. While typing a word
@@ -110,19 +112,87 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
     _nativeFocus.requestFocus();
   }
 
+  Future<void> _renameDeck() async {
+    final name = await showRenameDeckDialog(context, deck.name);
+    if (name != null) {
+      deck.name = name;
+      await widget.store.save();
+      if (mounted) setState(() {});
+    }
+  }
+
+  String _norm(String s) => s.toLowerCase().trim();
+
+  Future<void> _openAiEdit() async {
+    final plan = await showDialog<DeckEditPlan>(
+      context: context,
+      builder: (_) => AiDeckEditDialog(deck: deck),
+    );
+    if (plan == null) return;
+
+    var removed = 0;
+    for (final target in plan.removals) {
+      final before = deck.cards.length;
+      deck.cards.removeWhere((c) => _norm(c.target) == _norm(target));
+      removed += before - deck.cards.length;
+    }
+    var added = 0;
+    for (final a in plan.additions) {
+      final duplicate = deck.cards.any((c) =>
+          _norm(c.target) == _norm(a.target) &&
+          _norm(c.native) == _norm(a.native));
+      if (!duplicate) {
+        deck.cards.add(CardItem(native: a.native, target: a.target));
+        added++;
+      }
+    }
+    await widget.store.save();
+    if (!mounted) return;
+    setState(() {});
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text([
+          if (added > 0) 'Added $added ${added == 1 ? "card" : "cards"}',
+          if (removed > 0)
+            'removed $removed ${removed == 1 ? "card" : "cards"}',
+          if (added == 0 && removed == 0) 'No changes applied',
+        ].join(', ')),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Row(
-          children: [
-            Text(flagFor(deck.targetLanguage),
-                style: const TextStyle(fontSize: 22)),
-            const SizedBox(width: 10),
-            Text(deck.name),
-          ],
+        title: InkWell(
+          onTap: _renameDeck,
+          borderRadius: BorderRadius.circular(8),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(flagFor(deck.targetLanguage),
+                    style: const TextStyle(fontSize: 22)),
+                const SizedBox(width: 10),
+                Flexible(
+                  child: Text(deck.name, overflow: TextOverflow.ellipsis),
+                ),
+                const SizedBox(width: 8),
+                Icon(Icons.edit_outlined,
+                    size: 16, color: SprakTheme.inkSoft),
+              ],
+            ),
+          ),
         ),
         actions: [
+          FilledButton.tonalIcon(
+            icon: const Icon(Icons.auto_awesome, size: 18),
+            label: const Text('Edit with AI'),
+            onPressed: _openAiEdit,
+          ),
+          const SizedBox(width: 10),
           FilledButton.tonalIcon(
             icon: const Icon(Icons.school_outlined, size: 18),
             label: const Text('Learn'),

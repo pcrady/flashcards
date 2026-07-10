@@ -80,6 +80,9 @@ class _QuizScreenState extends State<QuizScreen> {
       }
     });
     widget.store.save();
+    // Keep focus in the (now read-only) field so Enter advances to the
+    // next card without reaching for the mouse.
+    _answerFocus.requestFocus();
     // Always let the learner hear the target-language side.
     TtsService().speak(card.target, ttsLocaleFor(deck.targetLanguage));
   }
@@ -174,7 +177,7 @@ class _QuizScreenState extends State<QuizScreen> {
                         controller: _answerController,
                         focusNode: _answerFocus,
                         autofocus: true,
-                        enabled: _phase == _Phase.asking,
+                        readOnly: _phase != _Phase.asking,
                         textAlign: TextAlign.center,
                         style: const TextStyle(fontSize: 22),
                         decoration: InputDecoration(
@@ -234,10 +237,9 @@ class _QuizScreenState extends State<QuizScreen> {
                         ),
                         const SizedBox(height: 14),
                         FilledButton.icon(
-                          autofocus: true,
                           onPressed: _next,
                           icon: const Icon(Icons.arrow_forward, size: 18),
-                          label: const Text('Next'),
+                          label: const Text('Next  ⏎'),
                         ),
                       ],
                     ],

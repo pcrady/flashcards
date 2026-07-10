@@ -25,8 +25,17 @@ const List<LlmProvider> kLlmProviders = [
       keyRequired: false),
 ];
 
-/// Dispatches tutor-chat requests to whichever LLM provider is configured
-/// in Settings. Translation always uses Claude (see ClaudeService).
+/// A reviewed-before-apply set of deck changes proposed by the LLM.
+class DeckEditPlan {
+  final List<({String native, String target})> additions;
+
+  /// Target-language text of existing cards to delete.
+  final List<String> removals;
+  DeckEditPlan({required this.additions, required this.removals});
+}
+
+/// Dispatches AI requests (tutor chat, translation, deck editing) to
+/// whichever LLM provider is configured in Settings.
 class LlmService {
   static const providerPref = 'chat_provider';
   static const customBaseUrlPref = 'custom_base_url';
@@ -131,6 +140,76 @@ class LlmService {
           system: system,
           history: history,
         );
+    }
+  }
+
+  /// Asks the LLM to plan changes to a deck from a natural-language
+  /// instruction, e.g. "create the cards for the numbers 1-10".
+  static Future<DeckEditPlan> editDeck({
+    required String instruction,
+    required String targetLanguage,
+    required String nativeLanguage,
+    required List<Map<String, String>> existingCards,
+  }) async {
+    final system = '''
+You edit a flashcard deck for a language-learning app. The learner speaks
+$nativeLanguage and is learning $targetLanguage.
+
+The deck currently contains these cards (JSON):
+${jsonEncode(existingCards)}
+
+The user gives an instruction describing changes to make. Respond with ONLY a
+JSON object — no markdown fences, no commentary — in exactly this shape:
+{"add": [{"native": "...", "target": "..."}], "remove": ["...", "..."]}
+
+- "add": new cards to create. "native" is the $nativeLanguage side, "target"
+  is the $targetLanguage side. Do not duplicate cards already in the deck.
+- "remove": the exact "target" text of existing cards that should be deleted.
+Use an empty array for whichever does not apply.''';
+
+    final reply = await _complete(
+      system: system,
+      history: [ChatMessage('user', instruction)],
+      maxTokens: 4096,
+    );
+
+    final decoded = _extractJson(reply);
+    if (decoded is! Map) {
+      throw LlmException('The model did not return a valid change plan.');
+    }
+    final additions = <({String native, String target})>[];
+    for (final a in decoded['add'] as List<dynamic>? ?? []) {
+      if (a is Map) {
+        final native = (a['native'] as String?)?.trim() ?? '';
+        final target = (a['target'] as String?)?.trim() ?? '';
+        if (native.isNotEmpty && target.isNotEmpty) {
+          additions.add((native: native, target: target));
+        }
+      }
+    }
+    final removals = <String>[
+      for (final r in decoded['remove'] as List<dynamic>? ?? [])
+        if (r is String && r.trim().isNotEmpty) r.trim(),
+    ];
+    if (additions.isEmpty && removals.isEmpty) {
+      throw LlmException(
+          'The model suggested no changes for that instruction.');
+    }
+    return DeckEditPlan(additions: additions, removals: removals);
+  }
+
+  /// Pulls the first JSON object out of a model reply, tolerating markdown
+  /// fences and surrounding prose.
+  static dynamic _extractJson(String text) {
+    final start = text.indexOf('{');
+    final end = text.lastIndexOf('}');
+    if (start < 0 || end <= start) {
+      throw LlmException('The model did not return valid JSON.');
+    }
+    try {
+      return jsonDecode(text.substring(start, end + 1));
+    } catch (_) {
+      throw LlmException('The model did not return valid JSON.');
     }
   }
 

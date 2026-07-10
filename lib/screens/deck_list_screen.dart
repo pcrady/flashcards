@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models.dart';
 import '../storage.dart';
 import '../theme.dart';
+import '../widgets/rename_deck_dialog.dart';
 import 'deck_detail_screen.dart';
 import 'quiz_screen.dart';
 import 'settings_screen.dart';
@@ -72,6 +73,7 @@ class DeckListScreen extends StatelessWidget {
                                       QuizScreen(store: store, deck: deck),
                                 ),
                               ),
+                      onRename: () => _renameDeck(context, deck),
                       onDelete: () => _confirmDelete(context, deck),
                     ),
                 ],
@@ -86,6 +88,14 @@ class DeckListScreen extends StatelessWidget {
         onPressed: () => _createDeck(context),
       ),
     );
+  }
+
+  Future<void> _renameDeck(BuildContext context, Deck deck) async {
+    final name = await showRenameDeckDialog(context, deck.name);
+    if (name != null) {
+      deck.name = name;
+      await store.save();
+    }
   }
 
   Future<void> _confirmDelete(BuildContext context, Deck deck) async {
@@ -184,12 +194,14 @@ class _DeckCard extends StatelessWidget {
   final Deck deck;
   final VoidCallback onOpen;
   final VoidCallback? onLearn;
+  final VoidCallback onRename;
   final VoidCallback onDelete;
 
   const _DeckCard({
     required this.deck,
     required this.onOpen,
     required this.onLearn,
+    required this.onRename,
     required this.onDelete,
   });
 
@@ -209,6 +221,16 @@ class _DeckCard extends StatelessWidget {
                   Text(flagFor(deck.targetLanguage),
                       style: const TextStyle(fontSize: 30)),
                   const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.edit_outlined, size: 18),
+                    color: SprakTheme.inkSoft,
+                    visualDensity: VisualDensity.compact,
+                    constraints:
+                        const BoxConstraints(minWidth: 32, minHeight: 32),
+                    padding: EdgeInsets.zero,
+                    tooltip: 'Rename set',
+                    onPressed: onRename,
+                  ),
                   IconButton(
                     icon: const Icon(Icons.delete_outline, size: 20),
                     color: SprakTheme.inkSoft,
