@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -35,7 +33,6 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
   final _targetFocus = FocusNode();
   final _suggestionFocus = FocusNode();
 
-  Timer? _debounce;
   bool _translating = false;
   String? _translateError;
   int _requestSeq = 0;
@@ -56,7 +53,6 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
 
   @override
   void dispose() {
-    _debounce?.cancel();
     _nativeController.dispose();
     _targetController.dispose();
     _nativeFocus.dispose();
@@ -67,19 +63,31 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
 
   void _onTyped({required bool fromNative}) {
     // Only react to typing in the focused field, so programmatic fills of
-    // the other field don't trigger a translation loop.
+    // the other field don't dismiss things unexpectedly.
     final focused = fromNative ? _nativeFocus.hasFocus : _targetFocus.hasFocus;
     if (!focused) return;
 
+    // Typing invalidates a pending suggestion.
     if (_suggestion != null) setState(() => _suggestion = null);
+  }
 
-    _debounce?.cancel();
-    final text = (fromNative ? _nativeController : _targetController).text;
-    if (text.trim().length < 2) return;
-
-    _debounce = Timer(const Duration(milliseconds: 900), () {
+  /// Enter in a text field: accept a pending suggestion; otherwise
+  /// translate when the other side is still empty; otherwise add the card.
+  void _onSubmit({required bool fromNative}) {
+    if (_translating) return;
+    if (_suggestion != null) {
+      _acceptSuggestion();
+      return;
+    }
+    final source = fromNative ? _nativeController : _targetController;
+    final other = fromNative ? _targetController : _nativeController;
+    if (source.text.trim().isNotEmpty && other.text.trim().isEmpty) {
       _translate(fromNative: fromNative);
-    });
+      // Keep focus in the field so the next Enter accepts the suggestion.
+      (fromNative ? _nativeFocus : _targetFocus).requestFocus();
+      return;
+    }
+    _addCard();
   }
 
   Future<void> _translate({required bool fromNative}) async {
@@ -289,9 +297,9 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                             style: Theme.of(context).textTheme.titleLarge),
                         const SizedBox(height: 4),
                         Text(
-                          'Type in either language — a translation is '
-                          'suggested below. Press Enter (or click it) to '
-                          'fill the other side, then Enter again to add.',
+                          'Type in either language and press Enter to '
+                          'translate. Enter again accepts the suggestion, '
+                          'and once more adds the card.',
                           style: TextStyle(
                               color: SprakTheme.inkSoft, fontSize: 13),
                         ),
@@ -306,9 +314,8 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                                 decoration: InputDecoration(
                                   labelText: deck.nativeLanguage,
                                 ),
-                                onSubmitted: (_) => _suggestion != null
-                                    ? _acceptSuggestion()
-                                    : _addCard(),
+                                onSubmitted: (_) =>
+                                    _onSubmit(fromNative: true),
                               ),
                             ),
                             Padding(
@@ -331,9 +338,8 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                                 decoration: InputDecoration(
                                   labelText: deck.targetLanguage,
                                 ),
-                                onSubmitted: (_) => _suggestion != null
-                                    ? _acceptSuggestion()
-                                    : _addCard(),
+                                onSubmitted: (_) =>
+                                    _onSubmit(fromNative: false),
                               ),
                             ),
                             const SizedBox(width: 14),
