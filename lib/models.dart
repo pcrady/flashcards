@@ -78,6 +78,53 @@ class CardItem {
       );
 }
 
+/// A card asked in one direction, referenced by ID for persistence.
+class QuizTaskRef {
+  final String cardId;
+  final bool askInTarget;
+  QuizTaskRef(this.cardId, this.askInTarget);
+
+  Map<String, dynamic> toJson() =>
+      {'cardId': cardId, 'askInTarget': askInTarget};
+
+  factory QuizTaskRef.fromJson(Map<String, dynamic> json) => QuizTaskRef(
+        json['cardId'] as String,
+        json['askInTarget'] as bool? ?? true,
+      );
+}
+
+/// A saved mid-study session, so the learner can pick up where they
+/// left off.
+class QuizSession {
+  final List<List<String>> groups; // card IDs per group
+  final int groupIndex;
+  final List<QuizTaskRef> remaining;
+
+  QuizSession({
+    required this.groups,
+    required this.groupIndex,
+    required this.remaining,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'groups': groups,
+        'groupIndex': groupIndex,
+        'remaining': remaining.map((t) => t.toJson()).toList(),
+      };
+
+  factory QuizSession.fromJson(Map<String, dynamic> json) => QuizSession(
+        groups: [
+          for (final g in json['groups'] as List<dynamic>? ?? [])
+            [for (final id in g as List<dynamic>) id as String],
+        ],
+        groupIndex: json['groupIndex'] as int? ?? 0,
+        remaining: [
+          for (final t in json['remaining'] as List<dynamic>? ?? [])
+            QuizTaskRef.fromJson(t as Map<String, dynamic>),
+        ],
+      );
+}
+
 class Deck {
   final String id;
   String name;
@@ -89,12 +136,16 @@ class Deck {
   String nativeLanguage;
   final List<CardItem> cards;
 
+  /// In-progress study session, if the learner left mid-deck.
+  QuizSession? session;
+
   Deck({
     String? id,
     required this.name,
     required this.targetLanguage,
     required this.nativeLanguage,
     List<CardItem>? cards,
+    this.session,
   })  : id = id ?? _uuid.v4(),
         cards = cards ?? [];
 
@@ -104,6 +155,7 @@ class Deck {
         'targetLanguage': targetLanguage,
         'nativeLanguage': nativeLanguage,
         'cards': cards.map((c) => c.toJson()).toList(),
+        if (session != null) 'session': session!.toJson(),
       };
 
   factory Deck.fromJson(Map<String, dynamic> json) => Deck(
@@ -114,5 +166,8 @@ class Deck {
         cards: (json['cards'] as List<dynamic>? ?? [])
             .map((c) => CardItem.fromJson(c as Map<String, dynamic>))
             .toList(),
+        session: json['session'] != null
+            ? QuizSession.fromJson(json['session'] as Map<String, dynamic>)
+            : null,
       );
 }

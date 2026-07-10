@@ -11,6 +11,18 @@ import '../widgets/chat_box.dart';
 
 enum _Phase { asking, answered, groupCleared, deckCleared }
 
+/// How a study session starts.
+enum QuizMode {
+  /// Whole deck, fully shuffled.
+  whole,
+
+  /// Restore the saved session and pick up where the learner left off.
+  resume,
+
+  /// Whole deck, ordered so the most-missed cards come first.
+  mistakes,
+}
+
 const int _kGroupSize = 6;
 
 /// One quiz task: a card asked in a specific direction.
@@ -24,7 +36,13 @@ typedef _Task = ({CardItem card, bool askInTarget});
 class QuizScreen extends StatefulWidget {
   final DeckStore store;
   final Deck deck;
-  const QuizScreen({super.key, required this.store, required this.deck});
+  final QuizMode mode;
+  const QuizScreen({
+    super.key,
+    required this.store,
+    required this.deck,
+    this.mode = QuizMode.whole,
+  });
 
   @override
   State<QuizScreen> createState() => _QuizScreenState();
@@ -58,7 +76,14 @@ class _QuizScreenState extends State<QuizScreen> {
   @override
   void initState() {
     super.initState();
-    _buildGroups();
+    final session = deck.session;
+    if (widget.mode == QuizMode.resume &&
+        session != null &&
+        _restore(session)) {
+      return;
+    }
+    _buildGroups(
+        widget.mode == QuizMode.mistakes ? _mistakeOrdered() : _shuffled());
   }
 
   @override
@@ -78,20 +103,84 @@ class _QuizScreenState extends State<QuizScreen> {
     return done + _group.length * 2 - _remaining.length;
   }
 
-  int get _tasksTotal => deck.cards.length * 2;
+  int get _tasksTotal {
+    var total = 0;
+    for (final g in _groups) {
+      total += g.length * 2;
+    }
+    return total;
+  }
 
   double get _deckProgress =>
       _tasksTotal == 0 ? 0 : _tasksDone / _tasksTotal;
 
-  /// Shuffles the whole deck and partitions it into groups of six.
-  void _buildGroups() {
+  List<CardItem> _shuffled() => List.of(deck.cards)..shuffle(_random);
+
+  /// Deck ordered worst-first: most misses, ties broken by fewest correct
+  /// answers (shuffled first so equal cards land in random order).
+  List<CardItem> _mistakeOrdered() {
     final all = List.of(deck.cards)..shuffle(_random);
+    all.sort((a, b) {
+      final byWrong = b.timesWrong.compareTo(a.timesWrong);
+      if (byWrong != 0) return byWrong;
+      return a.timesCorrect.compareTo(b.timesCorrect);
+    });
+    return all;
+  }
+
+  /// Partitions [ordered] into groups of six and starts the first one.
+  void _buildGroups(List<CardItem> ordered) {
     _groups = [
-      for (var i = 0; i < all.length; i += _kGroupSize)
-        all.sublist(i, min(i + _kGroupSize, all.length)),
+      for (var i = 0; i < ordered.length; i += _kGroupSize)
+        ordered.sublist(i, min(i + _kGroupSize, ordered.length)),
     ];
     _groupIndex = 0;
     _startGroup();
+    _persistSession();
+  }
+
+  /// Rebuilds quiz state from a saved session; false if it is no longer
+  /// usable (e.g. its cards were deleted).
+  bool _restore(QuizSession session) {
+    final byId = {for (final c in deck.cards) c.id: c};
+    final groups = [
+      for (final g in session.groups)
+        [
+          for (final id in g)
+            if (byId[id] != null) byId[id]!,
+        ],
+    ]..removeWhere((g) => g.isEmpty);
+    if (groups.isEmpty) return false;
+
+    final groupIndex = session.groupIndex.clamp(0, groups.length - 1);
+    final remaining = <_Task>[
+      for (final t in session.remaining)
+        if (byId[t.cardId] != null)
+          (card: byId[t.cardId]!, askInTarget: t.askInTarget),
+    ];
+    if (remaining.isEmpty) return false;
+
+    _groups = groups;
+    _groupIndex = groupIndex;
+    _remaining = remaining;
+    return true;
+  }
+
+  /// Writes the current position into the deck so it survives leaving the
+  /// screen (persisted by the next store.save()).
+  void _persistSession({bool clear = false}) {
+    deck.session = clear
+        ? null
+        : QuizSession(
+            groups: [
+              for (final g in _groups) [for (final c in g) c.id],
+            ],
+            groupIndex: _groupIndex,
+            remaining: [
+              for (final t in _remaining)
+                QuizTaskRef(t.card.id, t.askInTarget),
+            ],
+          );
   }
 
   void _startGroup() {
@@ -147,6 +236,12 @@ class _QuizScreenState extends State<QuizScreen> {
 
     if (_remaining.isEmpty) {
       final deckDone = _groupIndex + 1 >= _groups.length;
+      // A finished deck clears the saved session; mid-deck the session
+      // points at the next group.
+      if (deckDone) {
+        _persistSession(clear: true);
+      }
+      widget.store.save();
       setState(() {
         _phase = deckDone ? _Phase.deckCleared : _Phase.groupCleared;
         _lastCorrect = null;
@@ -155,6 +250,8 @@ class _QuizScreenState extends State<QuizScreen> {
       return;
     }
 
+    _persistSession();
+    widget.store.save();
     setState(() {
       _phase = _Phase.asking;
       _lastCorrect = null;
@@ -171,18 +268,21 @@ class _QuizScreenState extends State<QuizScreen> {
       _lastCorrect = null;
       _answerController.clear();
     });
+    _persistSession();
+    widget.store.save();
     _answerFocus.requestFocus();
   }
 
   void _studyAgain() {
     setState(() {
-      _buildGroups();
+      _buildGroups(_shuffled());
       _phase = _Phase.asking;
       _lastCorrect = null;
       _correctCount = 0;
       _wrongCount = 0;
       _answerController.clear();
     });
+    widget.store.save();
     _answerFocus.requestFocus();
   }
 

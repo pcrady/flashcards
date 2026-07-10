@@ -3,9 +3,9 @@ import 'package:flutter/material.dart';
 import '../models.dart';
 import '../storage.dart';
 import '../theme.dart';
+import '../widgets/learn_mode_dialog.dart';
 import '../widgets/rename_deck_dialog.dart';
 import 'deck_detail_screen.dart';
-import 'quiz_screen.dart';
 import 'settings_screen.dart';
 
 class DeckListScreen extends StatelessWidget {
@@ -67,12 +67,7 @@ class DeckListScreen extends StatelessWidget {
                       ),
                       onLearn: deck.cards.isEmpty
                           ? null
-                          : () => Navigator.of(context).push(
-                                MaterialPageRoute(
-                                  builder: (_) =>
-                                      QuizScreen(store: store, deck: deck),
-                                ),
-                              ),
+                          : () => startLearning(context, store, deck),
                       onRename: () => _renameDeck(context, deck),
                       onDelete: () => _confirmDelete(context, deck),
                     ),
