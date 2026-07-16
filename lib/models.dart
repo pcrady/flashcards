@@ -78,18 +78,42 @@ class CardItem {
       );
 }
 
+/// How the learner answers during a quiz.
+enum QuizStyle {
+  /// Pick the right answer out of four options.
+  multipleChoice('choice'),
+
+  /// Type every answer, in both directions.
+  typing('typing'),
+
+  /// Multiple choice plus typing in both directions — all must be cleared.
+  both('both');
+
+  final String id;
+  const QuizStyle(this.id);
+
+  static QuizStyle fromId(String? id) => QuizStyle.values.firstWhere(
+        (s) => s.id == id,
+        orElse: () => QuizStyle.typing,
+      );
+}
+
 /// A card asked in one direction, referenced by ID for persistence.
 class QuizTaskRef {
   final String cardId;
   final bool askInTarget;
-  QuizTaskRef(this.cardId, this.askInTarget);
+
+  /// True for a multiple-choice task, false for typed.
+  final bool isChoice;
+  QuizTaskRef(this.cardId, this.askInTarget, {this.isChoice = false});
 
   Map<String, dynamic> toJson() =>
-      {'cardId': cardId, 'askInTarget': askInTarget};
+      {'cardId': cardId, 'askInTarget': askInTarget, 'isChoice': isChoice};
 
   factory QuizTaskRef.fromJson(Map<String, dynamic> json) => QuizTaskRef(
         json['cardId'] as String,
         json['askInTarget'] as bool? ?? true,
+        isChoice: json['isChoice'] as bool? ?? false,
       );
 }
 
@@ -99,17 +123,20 @@ class QuizSession {
   final List<List<String>> groups; // card IDs per group
   final int groupIndex;
   final List<QuizTaskRef> remaining;
+  final QuizStyle style;
 
   QuizSession({
     required this.groups,
     required this.groupIndex,
     required this.remaining,
+    this.style = QuizStyle.typing,
   });
 
   Map<String, dynamic> toJson() => {
         'groups': groups,
         'groupIndex': groupIndex,
         'remaining': remaining.map((t) => t.toJson()).toList(),
+        'style': style.id,
       };
 
   factory QuizSession.fromJson(Map<String, dynamic> json) => QuizSession(
@@ -122,6 +149,7 @@ class QuizSession {
           for (final t in json['remaining'] as List<dynamic>? ?? [])
             QuizTaskRef.fromJson(t as Map<String, dynamic>),
         ],
+        style: QuizStyle.fromId(json['style'] as String?),
       );
 }
 

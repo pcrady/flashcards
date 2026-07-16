@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -54,21 +55,250 @@ class LlmService {
     return providerById(prefs.getString(providerPref) ?? 'anthropic');
   }
 
-  /// Sends a chat turn for the language-tutor conversation box.
-  static Future<String> chat({
+  /// Streams a chat turn for the language-tutor conversation box as text
+  /// deltas, so the reply can be rendered as it is generated.
+  static Stream<String> chatStream({
     required List<ChatMessage> history,
     required String targetLanguage,
     required String nativeLanguage,
     String? currentContext,
-  }) {
-    return _complete(
-      system: _tutorSystemPrompt(
-        targetLanguage: targetLanguage,
-        nativeLanguage: nativeLanguage,
-        currentContext: currentContext,
-      ),
-      history: history,
+  }) async* {
+    final system = _tutorSystemPrompt(
+      targetLanguage: targetLanguage,
+      nativeLanguage: nativeLanguage,
+      currentContext: currentContext,
     );
+    final prefs = await SharedPreferences.getInstance();
+    final provider = providerById(prefs.getString(providerPref) ?? 'anthropic');
+    final storedModel = prefs.getString(modelPref(provider.id))?.trim();
+    final model = (storedModel == null || storedModel.isEmpty)
+        ? provider.defaultModel
+        : storedModel;
+
+    switch (provider.id) {
+      case 'anthropic':
+        final key = await ClaudeService.apiKey();
+        if (key == null) {
+          throw LlmException(
+              'No Anthropic API key set. Add one in Settings (gear icon).');
+        }
+        yield* _anthropicStream(
+            apiKey: key, model: model, system: system, history: history);
+      case 'gemini':
+        yield* _geminiStream(
+          apiKey: prefs.getString(keyPref('gemini'))?.trim(),
+          model: model,
+          system: system,
+          history: history,
+        );
+      case 'openai':
+        yield* _openAiCompatibleStream(
+          baseUrl: 'https://api.openai.com/v1',
+          apiKey: prefs.getString(keyPref('openai'))?.trim(),
+          keyRequired: true,
+          providerLabel: 'OpenAI',
+          model: model,
+          system: system,
+          history: history,
+        );
+      case 'custom':
+      default:
+        yield* _openAiCompatibleStream(
+          baseUrl:
+              (prefs.getString(customBaseUrlPref)?.trim().isNotEmpty ?? false)
+                  ? prefs.getString(customBaseUrlPref)!.trim()
+                  : defaultCustomBaseUrl,
+          apiKey: prefs.getString(keyPref('custom'))?.trim(),
+          keyRequired: false,
+          providerLabel: 'the custom endpoint',
+          model: model,
+          system: system,
+          history: history,
+        );
+    }
+  }
+
+  /// POSTs [body] to an SSE endpoint and yields each `data:` payload
+  /// (minus the `[DONE]` sentinel used by OpenAI-style APIs).
+  static Stream<String> _sse({
+    required Uri uri,
+    required Map<String, String> headers,
+    required Map<String, dynamic> body,
+    required String providerLabel,
+  }) async* {
+    final client = http.Client();
+    try {
+      final request = http.Request('POST', uri)
+        ..headers.addAll({
+          'content-type': 'application/json',
+          'accept': 'text/event-stream',
+          ...headers,
+        })
+        ..body = jsonEncode(body);
+      final http.StreamedResponse resp;
+      try {
+        resp = await client.send(request).timeout(const Duration(seconds: 30));
+      } on SocketException {
+        throw LlmException('Could not reach $providerLabel — check the URL '
+            'and your connection.');
+      } on TimeoutException {
+        throw LlmException('$providerLabel did not respond — try again.');
+      }
+      if (resp.statusCode != 200) {
+        final text = await resp.stream.bytesToString();
+        var msg = 'API error (HTTP ${resp.statusCode})';
+        try {
+          final decoded = jsonDecode(text);
+          if (decoded is Map && decoded['error'] is Map) {
+            msg = decoded['error']['message'] as String? ?? msg;
+          }
+        } catch (_) {}
+        throw LlmException(msg);
+      }
+      await for (final line in resp.stream
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())) {
+        if (!line.startsWith('data:')) continue;
+        final data = line.substring(5).trim();
+        if (data.isEmpty || data == '[DONE]') continue;
+        yield data;
+      }
+    } finally {
+      client.close();
+    }
+  }
+
+  static Stream<String> _anthropicStream({
+    required String apiKey,
+    required String model,
+    required String system,
+    required List<ChatMessage> history,
+  }) async* {
+    await for (final data in _sse(
+      uri: Uri.parse('https://api.anthropic.com/v1/messages'),
+      headers: {'x-api-key': apiKey, 'anthropic-version': '2023-06-01'},
+      body: {
+        'model': model,
+        'max_tokens': 1024,
+        'stream': true,
+        'system': system,
+        'messages': [
+          for (final m in history) {'role': m.role, 'content': m.text},
+        ],
+      },
+      providerLabel: 'Anthropic',
+    )) {
+      final dynamic event;
+      try {
+        event = jsonDecode(data);
+      } catch (_) {
+        continue;
+      }
+      if (event is! Map) continue;
+      if (event['type'] == 'error') {
+        throw LlmException(
+            (event['error'] as Map?)?['message'] as String? ?? 'API error');
+      }
+      if (event['type'] == 'content_block_delta') {
+        final delta = event['delta'];
+        if (delta is Map && delta['type'] == 'text_delta') {
+          final text = delta['text'] as String? ?? '';
+          if (text.isNotEmpty) yield text;
+        }
+      }
+    }
+  }
+
+  static Stream<String> _openAiCompatibleStream({
+    required String baseUrl,
+    required String? apiKey,
+    required bool keyRequired,
+    required String providerLabel,
+    required String model,
+    required String system,
+    required List<ChatMessage> history,
+  }) async* {
+    if (keyRequired && (apiKey == null || apiKey.isEmpty)) {
+      throw LlmException(
+          'No $providerLabel API key set. Add one in Settings (gear icon).');
+    }
+    await for (final data in _sse(
+      uri: Uri.parse(
+          '${baseUrl.replaceAll(RegExp(r'/+$'), '')}/chat/completions'),
+      headers: {
+        if (apiKey != null && apiKey.isNotEmpty)
+          'authorization': 'Bearer $apiKey',
+      },
+      body: {
+        'model': model,
+        'stream': true,
+        'messages': [
+          {'role': 'system', 'content': system},
+          for (final m in history) {'role': m.role, 'content': m.text},
+        ],
+      },
+      providerLabel: providerLabel,
+    )) {
+      final dynamic event;
+      try {
+        event = jsonDecode(data);
+      } catch (_) {
+        continue;
+      }
+      final content = event?['choices']?[0]?['delta']?['content'];
+      if (content is String && content.isNotEmpty) yield content;
+    }
+  }
+
+  static Stream<String> _geminiStream({
+    required String? apiKey,
+    required String model,
+    required String system,
+    required List<ChatMessage> history,
+  }) async* {
+    if (apiKey == null || apiKey.isEmpty) {
+      throw LlmException(
+          'No Gemini API key set. Add one in Settings (gear icon).');
+    }
+    await for (final data in _sse(
+      uri: Uri.parse('https://generativelanguage.googleapis.com/'
+          'v1beta/models/$model:streamGenerateContent?alt=sse'),
+      headers: {'x-goog-api-key': apiKey},
+      body: {
+        'system_instruction': {
+          'parts': [
+            {'text': system},
+          ],
+        },
+        'contents': [
+          for (final m in history)
+            {
+              'role': m.role == 'assistant' ? 'model' : 'user',
+              'parts': [
+                {'text': m.text},
+              ],
+            },
+        ],
+      },
+      providerLabel: 'Gemini',
+    )) {
+      final dynamic event;
+      try {
+        event = jsonDecode(data);
+      } catch (_) {
+        continue;
+      }
+      if (event is Map && event['error'] is Map) {
+        throw LlmException(
+            event['error']['message'] as String? ?? 'API error');
+      }
+      final parts = event?['candidates']?[0]?['content']?['parts'];
+      if (parts is! List) continue;
+      for (final p in parts) {
+        final text = p is Map ? p['text'] as String? ?? '' : '';
+        if (text.isNotEmpty) yield text;
+      }
+    }
   }
 
   /// Analyzes [text] (a word or phrase in [from]) for the add-card flow:
@@ -348,7 +578,10 @@ Use an empty array for whichever does not apply.''';
       ..writeln('Answer questions about vocabulary, grammar, pronunciation, '
           'and usage. Keep answers short and practical, and include '
           '$targetLanguage examples with $nativeLanguage glosses where '
-          'helpful.');
+          'helpful.')
+      ..writeln('Plain text only — no markdown. Inline LaTeX between \$ '
+          'signs is rendered, so you may use it where real notation helps '
+          '(e.g. IPA or stress marks); never use it for ordinary text.');
     if (currentContext != null && currentContext.isNotEmpty) {
       system.writeln('The learner is currently studying: $currentContext');
     }

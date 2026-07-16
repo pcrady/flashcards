@@ -5,8 +5,9 @@ import '../screens/quiz_screen.dart';
 import '../storage.dart';
 import '../theme.dart';
 
-/// Asks how to study (whole deck / continue / focus on mistakes), then
-/// opens the quiz in the chosen mode.
+/// Asks how to study (whole deck / continue / focus on mistakes) and how
+/// to answer (multiple choice / typing / both), then opens the quiz.
+/// Resuming skips the second question — the style is saved in the session.
 Future<void> startLearning(
     BuildContext context, DeckStore store, Deck deck) async {
   if (deck.cards.isEmpty) return;
@@ -59,9 +60,60 @@ Future<void> startLearning(
   );
 
   if (mode == null || !context.mounted) return;
+
+  QuizStyle? style;
+  if (mode == QuizMode.resume) {
+    style = session?.style ?? QuizStyle.typing;
+  } else {
+    style = await showDialog<QuizStyle>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('How do you want to answer?'),
+        content: SizedBox(
+          width: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _ModeTile(
+                icon: Icons.checklist,
+                title: 'Multiple choice',
+                subtitle: 'Pick the right answer out of four options.',
+                onTap: () =>
+                    Navigator.pop(context, QuizStyle.multipleChoice),
+              ),
+              const SizedBox(height: 10),
+              _ModeTile(
+                icon: Icons.keyboard_alt_outlined,
+                title: 'Typing',
+                subtitle: 'Type every answer, in both directions.',
+                onTap: () => Navigator.pop(context, QuizStyle.typing),
+              ),
+              const SizedBox(height: 10),
+              _ModeTile(
+                icon: Icons.all_inclusive,
+                title: 'Both',
+                subtitle: 'Each card must clear multiple choice AND '
+                    'typing in both directions.',
+                onTap: () => Navigator.pop(context, QuizStyle.both),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+    if (style == null || !context.mounted) return;
+  }
+
   Navigator.of(context).push(
     MaterialPageRoute(
-      builder: (_) => QuizScreen(store: store, deck: deck, mode: mode),
+      builder: (_) =>
+          QuizScreen(store: store, deck: deck, mode: mode, style: style!),
     ),
   );
 }

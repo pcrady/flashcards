@@ -8,8 +8,10 @@ import '../services/tts_service.dart';
 import '../storage.dart';
 import '../theme.dart';
 import '../widgets/ai_deck_edit_dialog.dart';
+import '../widgets/edit_card_dialog.dart';
 import '../widgets/learn_mode_dialog.dart';
 import '../widgets/rename_deck_dialog.dart';
+import '../widgets/tex_text.dart';
 
 /// Shows a deck's cards and lets the user add new ones. While typing a word
 /// in either language, the other field is auto-filled with a translation
@@ -253,6 +255,20 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
       _translationSuggestion = null;
     });
     _nativeFocus.requestFocus();
+  }
+
+  Future<void> _editCard(CardItem card) async {
+    final result = await showEditCardDialog(
+      context,
+      card: card,
+      nativeLanguage: deck.nativeLanguage,
+      targetLanguage: deck.targetLanguage,
+    );
+    if (result == null) return;
+    card.native = result.native;
+    card.target = result.target;
+    await widget.store.save();
+    if (mounted) setState(() {});
   }
 
   Future<void> _renameDeck() async {
@@ -570,11 +586,11 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                                     card.target,
                                     ttsLocaleFor(deck.targetLanguage)),
                               ),
-                              title: Text(card.target,
+                              title: TexText(card.target,
                                   style: SprakTheme.vocab(size: 20)),
                               subtitle: Padding(
                                 padding: const EdgeInsets.only(top: 2),
-                                child: Text(card.native,
+                                child: TexText(card.native,
                                     style: TextStyle(
                                         color: SprakTheme.inkSoft)),
                               ),
@@ -597,6 +613,13 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                                         '${card.timesWrong} times',
                                   ),
                                   const SizedBox(width: 10),
+                                  IconButton(
+                                    icon: const Icon(Icons.edit_outlined,
+                                        size: 20),
+                                    color: SprakTheme.inkSoft,
+                                    tooltip: 'Edit card',
+                                    onPressed: () => _editCard(card),
+                                  ),
                                   IconButton(
                                     icon: const Icon(Icons.delete_outline,
                                         size: 20),
@@ -673,7 +696,7 @@ class _SuggestionBox extends StatelessWidget {
                           fontSize: 11,
                           letterSpacing: 0.5),
                     ),
-                    Text(value, style: SprakTheme.vocab(size: 17)),
+                    TexText(value, style: SprakTheme.vocab(size: 17)),
                   ],
                 ),
               ),

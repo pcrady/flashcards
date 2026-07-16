@@ -2,6 +2,7 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models.dart';
 import '../services/keyboard_layout_service.dart';
@@ -9,6 +10,7 @@ import '../services/tts_service.dart';
 import '../storage.dart';
 import '../theme.dart';
 import '../widgets/chat_box.dart';
+import '../widgets/tex_text.dart';
 
 enum _Phase { asking, answered, groupCleared, deckCleared }
 
@@ -26,23 +28,26 @@ enum QuizMode {
 
 const int _kGroupSize = 6;
 
-/// One quiz task: a card asked in a specific direction.
-typedef _Task = ({CardItem card, bool askInTarget});
+/// One quiz task: a card asked in a specific direction, answered either by
+/// typing or by picking from multiple choice.
+typedef _Task = ({CardItem card, bool askInTarget, bool isChoice});
 
-/// Quiz workspace. Cards are shuffled and dealt in groups of six; every card
-/// must be answered correctly in BOTH directions before the next group
-/// starts, and missed tasks go back into the group's rotation. Clearing the
-/// whole deck ends with a celebration. An AI tutor conversation box sits
-/// underneath.
+/// Quiz workspace. Cards are shuffled and dealt in groups of six; every
+/// card must clear all its tasks (which tasks depends on the quiz style)
+/// before the next group starts, and missed tasks go back into the group's
+/// rotation. Clearing the whole deck ends with a celebration. An AI tutor
+/// conversation box sits underneath.
 class QuizScreen extends StatefulWidget {
   final DeckStore store;
   final Deck deck;
   final QuizMode mode;
+  final QuizStyle style;
   const QuizScreen({
     super.key,
     required this.store,
     required this.deck,
     this.mode = QuizMode.whole,
+    this.style = QuizStyle.typing,
   });
 
   @override
@@ -62,6 +67,18 @@ class _QuizScreenState extends State<QuizScreen> {
   /// auto-switching doesn't leak into the rest of the system.
   String? _originalLayoutId;
 
+  /// Tutor chat panel: dock position (moved via the buttons in its
+  /// header), plus its size per orientation — resizable via the drag
+  /// handle along its edge. All remembered across sessions.
+  static const _chatHeightPref = 'chat_height';
+  static const _chatWidthPref = 'chat_width';
+  static const _chatPositionPref = 'chat_position';
+  static const _chatMinHeight = 140.0;
+  static const _chatMinWidth = 280.0;
+  double _chatHeight = 280;
+  double _chatWidth = 380;
+  ChatPosition _chatPosition = ChatPosition.bottom;
+
   late List<List<CardItem>> _groups;
   int _groupIndex = 0;
 
@@ -74,18 +91,41 @@ class _QuizScreenState extends State<QuizScreen> {
   int _correctCount = 0;
   int _wrongCount = 0;
 
+  late QuizStyle _style;
+
+  /// Options for the current multiple-choice task, and which one the
+  /// learner picked.
+  List<String> _choices = const [];
+  int? _selectedChoice;
+  final _choiceFocus = FocusNode();
+
   Deck get deck => widget.deck;
   List<CardItem> get _group => _groups[_groupIndex];
   _Task get _task => _remaining.first;
   CardItem get card => _task.card;
   bool get _askInTarget => _task.askInTarget;
+  bool get _isChoice => _task.isChoice;
   String get prompt => _askInTarget ? card.target : card.native;
   String get expected => _askInTarget ? card.native : card.target;
+
+  /// Tasks each card must clear: multiple choice and/or typing in both
+  /// directions.
+  int get _tasksPerCard => _style == QuizStyle.both ? 3 : 2;
 
   @override
   void initState() {
     super.initState();
     KeyboardLayoutService.currentId().then((id) => _originalLayoutId = id);
+    SharedPreferences.getInstance().then((prefs) {
+      if (!mounted) return;
+      setState(() {
+        _chatHeight = prefs.getDouble(_chatHeightPref) ?? _chatHeight;
+        _chatWidth = prefs.getDouble(_chatWidthPref) ?? _chatWidth;
+        _chatPosition =
+            ChatPosition.fromId(prefs.getString(_chatPositionPref));
+      });
+    });
+    _style = widget.style;
     final session = deck.session;
     if (widget.mode != QuizMode.resume ||
         session == null ||
@@ -93,17 +133,50 @@ class _QuizScreenState extends State<QuizScreen> {
       _buildGroups(
           widget.mode == QuizMode.mistakes ? _mistakeOrdered() : _shuffled());
     }
-    _syncKeyboard();
+    _beginTask();
   }
 
   @override
   void dispose() {
     _answerController.dispose();
     _answerFocus.dispose();
+    _choiceFocus.dispose();
     TtsService().stop();
     final original = _originalLayoutId;
     if (original != null) KeyboardLayoutService.selectById(original);
     super.dispose();
+  }
+
+  /// Prepares whatever the freshly active task needs: choice options for
+  /// multiple choice, the right OS keyboard for typing.
+  void _beginTask() {
+    if (_remaining.isEmpty) return;
+    if (_isChoice) {
+      _choices = _buildChoices();
+    } else {
+      _syncKeyboard();
+    }
+  }
+
+  /// Focuses the answer surface of the active task, so Enter (and 1–4 for
+  /// multiple choice) keeps working without reaching for the mouse.
+  void _focusTask() {
+    if (_remaining.isEmpty) return;
+    (_isChoice ? _choiceFocus : _answerFocus).requestFocus();
+  }
+
+  /// The correct answer plus up to three distractors pulled from the rest
+  /// of the deck (same language side), shuffled.
+  List<String> _buildChoices() {
+    final correct = expected;
+    final seen = {_normalize(correct)};
+    final pool = <String>[];
+    for (final c in deck.cards) {
+      final option = _askInTarget ? c.native : c.target;
+      if (seen.add(_normalize(option))) pool.add(option);
+    }
+    pool.shuffle(_random);
+    return [correct, ...pool.take(3)]..shuffle(_random);
   }
 
   /// Switches the OS keyboard to the language the answer should be typed
@@ -116,19 +189,19 @@ class _QuizScreenState extends State<QuizScreen> {
         ttsLocaleFor(language).split('-').first);
   }
 
-  /// Cleared tasks (card × direction) across all groups so far.
+  /// Cleared tasks across all groups so far.
   int get _tasksDone {
     var done = 0;
     for (var g = 0; g < _groupIndex; g++) {
-      done += _groups[g].length * 2;
+      done += _groups[g].length * _tasksPerCard;
     }
-    return done + _group.length * 2 - _remaining.length;
+    return done + _group.length * _tasksPerCard - _remaining.length;
   }
 
   int get _tasksTotal {
     var total = 0;
     for (final g in _groups) {
-      total += g.length * 2;
+      total += g.length * _tasksPerCard;
     }
     return total;
   }
@@ -178,13 +251,18 @@ class _QuizScreenState extends State<QuizScreen> {
     final remaining = <_Task>[
       for (final t in session.remaining)
         if (byId[t.cardId] != null)
-          (card: byId[t.cardId]!, askInTarget: t.askInTarget),
+          (
+            card: byId[t.cardId]!,
+            askInTarget: t.askInTarget,
+            isChoice: t.isChoice,
+          ),
     ];
     if (remaining.isEmpty) return false;
 
     _groups = groups;
     _groupIndex = groupIndex;
     _remaining = remaining;
+    _style = session.style;
     return true;
   }
 
@@ -200,16 +278,25 @@ class _QuizScreenState extends State<QuizScreen> {
             groupIndex: _groupIndex,
             remaining: [
               for (final t in _remaining)
-                QuizTaskRef(t.card.id, t.askInTarget),
+                QuizTaskRef(t.card.id, t.askInTarget, isChoice: t.isChoice),
             ],
+            style: _style,
           );
   }
 
   void _startGroup() {
     _remaining = [
       for (final c in _group) ...[
-        (card: c, askInTarget: true),
-        (card: c, askInTarget: false),
+        // Multiple choice: recognize the target-language word. In pure
+        // multiple-choice style both directions are asked this way.
+        if (_style != QuizStyle.typing)
+          (card: c, askInTarget: true, isChoice: true),
+        if (_style == QuizStyle.multipleChoice)
+          (card: c, askInTarget: false, isChoice: true),
+        if (_style != QuizStyle.multipleChoice) ...[
+          (card: c, askInTarget: true, isChoice: false),
+          (card: c, askInTarget: false, isChoice: false),
+        ],
       ],
     ]..shuffle(_random);
   }
@@ -223,7 +310,20 @@ class _QuizScreenState extends State<QuizScreen> {
 
   void _check() {
     if (_phase != _Phase.asking) return;
-    final correct = _normalize(_answerController.text) == _normalize(expected);
+    _finishTask(_normalize(_answerController.text) == _normalize(expected));
+    // Keep focus in the (now read-only) field so Enter advances without
+    // reaching for the mouse.
+    _answerFocus.requestFocus();
+  }
+
+  void _checkChoice(int index) {
+    if (_phase != _Phase.asking || index >= _choices.length) return;
+    _selectedChoice = index;
+    _finishTask(_normalize(_choices[index]) == _normalize(expected));
+    _choiceFocus.requestFocus();
+  }
+
+  void _finishTask(bool correct) {
     setState(() {
       _phase = _Phase.answered;
       _lastCorrect = correct;
@@ -236,9 +336,6 @@ class _QuizScreenState extends State<QuizScreen> {
       }
     });
     widget.store.save();
-    // Keep focus in the (now read-only) field so Enter advances without
-    // reaching for the mouse.
-    _answerFocus.requestFocus();
     // Always let the learner hear the target-language side.
     TtsService().speak(card.target, ttsLocaleFor(deck.targetLanguage));
   }
@@ -267,6 +364,7 @@ class _QuizScreenState extends State<QuizScreen> {
       setState(() {
         _phase = deckDone ? _Phase.deckCleared : _Phase.groupCleared;
         _lastCorrect = null;
+        _selectedChoice = null;
         _answerController.clear();
       });
       return;
@@ -277,10 +375,11 @@ class _QuizScreenState extends State<QuizScreen> {
     setState(() {
       _phase = _Phase.asking;
       _lastCorrect = null;
+      _selectedChoice = null;
       _answerController.clear();
+      _beginTask();
     });
-    _syncKeyboard();
-    _answerFocus.requestFocus();
+    _focusTask();
   }
 
   void _advanceGroup() {
@@ -289,12 +388,13 @@ class _QuizScreenState extends State<QuizScreen> {
       _startGroup();
       _phase = _Phase.asking;
       _lastCorrect = null;
+      _selectedChoice = null;
       _answerController.clear();
+      _beginTask();
     });
     _persistSession();
     widget.store.save();
-    _syncKeyboard();
-    _answerFocus.requestFocus();
+    _focusTask();
   }
 
   void _studyAgain() {
@@ -302,13 +402,14 @@ class _QuizScreenState extends State<QuizScreen> {
       _buildGroups(_shuffled());
       _phase = _Phase.asking;
       _lastCorrect = null;
+      _selectedChoice = null;
       _correctCount = 0;
       _wrongCount = 0;
       _answerController.clear();
+      _beginTask();
     });
     widget.store.save();
-    _syncKeyboard();
-    _answerFocus.requestFocus();
+    _focusTask();
   }
 
   @override
@@ -356,47 +457,146 @@ class _QuizScreenState extends State<QuizScreen> {
           const SizedBox(width: 20),
         ],
       ),
-      body: Column(
-        children: [
-          // --- Quiz workspace ---
-          Expanded(
-            child: Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 560),
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: switch (_phase) {
-                    _Phase.deckCleared => _buildDeckCleared(),
-                    _Phase.groupCleared => _buildGroupCleared(),
-                    _ => _buildQuestion(context),
-                  },
-                ),
+      body: _buildBody(context),
+    );
+  }
+
+  /// Quiz workspace plus the tutor chat, docked left, right, or at the
+  /// bottom, separated by a resize handle.
+  Widget _buildBody(BuildContext context) {
+    final quizArea = Expanded(
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560),
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: switch (_phase) {
+              _Phase.deckCleared => _buildDeckCleared(),
+              _Phase.groupCleared => _buildGroupCleared(),
+              _ => _buildQuestion(context),
+            },
+          ),
+        ),
+      ),
+    );
+    final chat = ChatBox(
+      position: _chatPosition,
+      onPositionChanged: _setChatPosition,
+      targetLanguage: deck.targetLanguage,
+      nativeLanguage: deck.nativeLanguage,
+      currentContextBuilder: () =>
+          (_phase == _Phase.groupCleared || _phase == _Phase.deckCleared)
+              ? 'reviewing completed cards'
+              : '"${card.target}" (${deck.targetLanguage}) = '
+                  '"${card.native}" (${deck.nativeLanguage})',
+    );
+
+    switch (_chatPosition) {
+      case ChatPosition.bottom:
+        return Column(children: [
+          quizArea,
+          _buildResizeHandle(context),
+          SizedBox(
+            height: _chatHeight.clamp(_chatMinHeight, _maxChatHeight(context)),
+            child: chat,
+          ),
+        ]);
+      case ChatPosition.left:
+        return Row(children: [
+          SizedBox(
+            width: _chatWidth.clamp(_chatMinWidth, _maxChatWidth(context)),
+            child: chat,
+          ),
+          _buildResizeHandle(context),
+          quizArea,
+        ]);
+      case ChatPosition.right:
+        return Row(children: [
+          quizArea,
+          _buildResizeHandle(context),
+          SizedBox(
+            width: _chatWidth.clamp(_chatMinWidth, _maxChatWidth(context)),
+            child: chat,
+          ),
+        ]);
+    }
+  }
+
+  void _setChatPosition(ChatPosition position) {
+    setState(() => _chatPosition = position);
+    SharedPreferences.getInstance()
+        .then((prefs) => prefs.setString(_chatPositionPref, position.id));
+  }
+
+  Future<void> _saveChatSize() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_chatHeightPref, _chatHeight);
+    await prefs.setDouble(_chatWidthPref, _chatWidth);
+  }
+
+  /// Thin draggable bar between quiz and chat that resizes the chat panel
+  /// (perpendicular to the docked edge — it does not move the panel).
+  Widget _buildResizeHandle(BuildContext context) {
+    final bottom = _chatPosition == ChatPosition.bottom;
+    return MouseRegion(
+      cursor: bottom
+          ? SystemMouseCursors.resizeRow
+          : SystemMouseCursors.resizeColumn,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onVerticalDragUpdate: !bottom
+            ? null
+            : (details) => setState(() {
+                  _chatHeight = (_chatHeight - details.delta.dy)
+                      .clamp(_chatMinHeight, _maxChatHeight(context));
+                }),
+        onHorizontalDragUpdate: bottom
+            ? null
+            : (details) => setState(() {
+                  final delta = _chatPosition == ChatPosition.left
+                      ? details.delta.dx
+                      : -details.delta.dx;
+                  _chatWidth = (_chatWidth + delta)
+                      .clamp(_chatMinWidth, _maxChatWidth(context));
+                }),
+        onVerticalDragEnd: !bottom ? null : (_) => _saveChatSize(),
+        onHorizontalDragEnd: bottom ? null : (_) => _saveChatSize(),
+        child: Container(
+          height: bottom ? 11 : null,
+          width: bottom ? null : 11,
+          decoration: BoxDecoration(
+            border: bottom
+                ? const Border(top: BorderSide(color: SprakTheme.line))
+                : const Border(left: BorderSide(color: SprakTheme.line)),
+          ),
+          child: Center(
+            child: Container(
+              width: bottom ? 36 : 4,
+              height: bottom ? 4 : 36,
+              decoration: BoxDecoration(
+                color: SprakTheme.line,
+                borderRadius: BorderRadius.circular(999),
               ),
             ),
           ),
-          const Divider(height: 1),
-          // --- AI tutor conversation box ---
-          SizedBox(
-            height: 280,
-            child: ChatBox(
-              targetLanguage: deck.targetLanguage,
-              nativeLanguage: deck.nativeLanguage,
-              currentContextBuilder: () => (_phase == _Phase.groupCleared ||
-                      _phase == _Phase.deckCleared)
-                  ? 'reviewing completed cards'
-                  : '"${card.target}" (${deck.targetLanguage}) = '
-                      '"${card.native}" (${deck.nativeLanguage})',
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }
 
-  /// Dots showing how many tasks (card × direction) in the current group
-  /// are mastered.
+  /// The chat can take at most 60% of the window width when docked to a
+  /// side, so the quiz workspace always stays usable.
+  double _maxChatWidth(BuildContext context) =>
+      max(_chatMinWidth, MediaQuery.sizeOf(context).width * 0.6);
+
+  /// The chat can take at most 70% of the window, so the quiz workspace
+  /// always stays usable.
+  double _maxChatHeight(BuildContext context) =>
+      max(_chatMinHeight, MediaQuery.sizeOf(context).height * 0.7);
+
+  /// Dots showing how many tasks in the current group are mastered.
   Widget _buildGroupDots() {
-    final total = _group.length * 2;
+    final total = _group.length * _tasksPerCard;
     final clearedCount = total - _remaining.length;
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
@@ -441,7 +641,7 @@ class _QuizScreenState extends State<QuizScreen> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Flexible(
-              child: Text(
+              child: TexText(
                 prompt,
                 textAlign: TextAlign.center,
                 style: SprakTheme.vocab(size: 44),
@@ -460,52 +660,59 @@ class _QuizScreenState extends State<QuizScreen> {
           ],
         ),
         const SizedBox(height: 30),
-        TextField(
-          controller: _answerController,
-          focusNode: _answerFocus,
-          autofocus: true,
-          readOnly: _phase != _Phase.asking,
-          textAlign: TextAlign.center,
-          style: const TextStyle(fontSize: 22),
-          decoration: InputDecoration(
-            hintText: _askInTarget ? deck.nativeLanguage : deck.targetLanguage,
-            contentPadding:
-                const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
+        if (_isChoice)
+          _buildChoiceOptions(context)
+        else ...[
+          TextField(
+            controller: _answerController,
+            focusNode: _answerFocus,
+            autofocus: true,
+            readOnly: _phase != _Phase.asking,
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 22),
+            decoration: InputDecoration(
+              hintText:
+                  _askInTarget ? deck.nativeLanguage : deck.targetLanguage,
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
+            ),
+            // Keep focus on submit — the default behavior unfocuses the
+            // field, which swallows rapid Enter presses.
+            onEditingComplete: () {},
+            onSubmitted: (_) => _phase == _Phase.asking ? _check() : _next(),
           ),
-          // Keep focus on submit — the default behavior unfocuses the
-          // field, which swallows rapid Enter presses.
-          onEditingComplete: () {},
-          onSubmitted: (_) => _phase == _Phase.asking ? _check() : _next(),
-        ),
-        StreamBuilder<String?>(
-          stream: _keyboardLayout,
-          builder: (context, snapshot) {
-            final layout = snapshot.data;
-            if (layout == null) return const SizedBox.shrink();
-            return Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.keyboard_alt_outlined,
-                      size: 16, color: SprakTheme.inkSoft),
-                  const SizedBox(width: 6),
-                  Text(
-                    'Keyboard: $layout',
-                    style: TextStyle(
-                        color: SprakTheme.inkSoft, fontSize: 12.5),
-                  ),
-                ],
-              ),
-            );
-          },
-        ),
+          StreamBuilder<String?>(
+            stream: _keyboardLayout,
+            builder: (context, snapshot) {
+              final layout = snapshot.data;
+              if (layout == null) return const SizedBox.shrink();
+              return Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.keyboard_alt_outlined,
+                        size: 16, color: SprakTheme.inkSoft),
+                    const SizedBox(width: 6),
+                    Text(
+                      'Keyboard: $layout',
+                      style: TextStyle(
+                          color: SprakTheme.inkSoft, fontSize: 12.5),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        ],
         const SizedBox(height: 20),
         if (_phase == _Phase.asking)
-          FilledButton(
-            onPressed: _check,
-            child: const Text('Check'),
-          )
+          _isChoice
+              ? const SizedBox.shrink()
+              : FilledButton(
+                  onPressed: _check,
+                  child: const Text('Check'),
+                )
         else ...[
           Container(
             padding: const EdgeInsets.all(16),
@@ -541,7 +748,7 @@ class _QuizScreenState extends State<QuizScreen> {
                   ),
                 ),
                 const SizedBox(height: 6),
-                Text('$prompt  →  $expected',
+                TexText('$prompt  →  $expected',
                     textAlign: TextAlign.center,
                     style: const TextStyle(fontSize: 17)),
               ],
@@ -555,6 +762,109 @@ class _QuizScreenState extends State<QuizScreen> {
           ),
         ],
       ],
+    );
+  }
+
+  /// The four multiple-choice tiles. Selectable by click or the 1–4 keys;
+  /// after answering, the correct option turns green and a wrong pick red.
+  Widget _buildChoiceOptions(BuildContext context) {
+    const digits = [
+      LogicalKeyboardKey.digit1,
+      LogicalKeyboardKey.digit2,
+      LogicalKeyboardKey.digit3,
+      LogicalKeyboardKey.digit4,
+    ];
+    return CallbackShortcuts(
+      bindings: {
+        for (var i = 0; i < _choices.length && i < digits.length; i++)
+          SingleActivator(digits[i]): () => _checkChoice(i),
+        const SingleActivator(LogicalKeyboardKey.enter): _next,
+        const SingleActivator(LogicalKeyboardKey.numpadEnter): _next,
+      },
+      child: Focus(
+        focusNode: _choiceFocus,
+        autofocus: true,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            for (var i = 0; i < _choices.length; i++) ...[
+              if (i > 0) const SizedBox(height: 8),
+              _buildChoiceTile(context, i),
+            ],
+            if (_phase == _Phase.asking)
+              Padding(
+                padding: const EdgeInsets.only(top: 10),
+                child: Text(
+                  'Press 1–${_choices.length} to answer',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: SprakTheme.inkSoft, fontSize: 12),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildChoiceTile(BuildContext context, int i) {
+    final answered = _phase != _Phase.asking;
+    final isCorrect = _normalize(_choices[i]) == _normalize(expected);
+    final isPicked = _selectedChoice == i;
+
+    Color? accent;
+    if (answered && isCorrect) {
+      accent = SprakTheme.success;
+    } else if (answered && isPicked) {
+      accent = Theme.of(context).colorScheme.error;
+    }
+
+    return Material(
+      color:
+          accent != null ? accent.withValues(alpha: 0.10) : SprakTheme.panel,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: answered ? null : () => _checkChoice(i),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+                color: accent?.withValues(alpha: 0.5) ?? SprakTheme.line),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 24,
+                height: 24,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color:
+                      (accent ?? SprakTheme.fjord).withValues(alpha: 0.15),
+                ),
+                child: Text(
+                  '${i + 1}',
+                  style: TextStyle(
+                      color: accent ?? SprakTheme.fjord,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w800),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child:
+                    TexText(_choices[i], style: SprakTheme.vocab(size: 18)),
+              ),
+              if (answered && isCorrect)
+                Icon(Icons.check, size: 18, color: SprakTheme.success)
+              else if (answered && isPicked)
+                Icon(Icons.close,
+                    size: 18, color: Theme.of(context).colorScheme.error),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -575,8 +885,8 @@ class _QuizScreenState extends State<QuizScreen> {
                 style: Theme.of(context).textTheme.headlineSmall),
             const SizedBox(height: 8),
             Text(
-              'All ${_group.length} cards answered correctly in both '
-              'languages.',
+              'Every task for all ${_group.length} cards answered '
+              'correctly.',
               textAlign: TextAlign.center,
               style: TextStyle(color: SprakTheme.inkSoft),
             ),
@@ -619,8 +929,8 @@ class _QuizScreenState extends State<QuizScreen> {
             ),
             const SizedBox(height: 10),
             Text(
-              'Every card in “${deck.name}” cleared in both languages — '
-              '${deck.cards.length} cards, ${deck.cards.length * 2} answers.',
+              'Every card in “${deck.name}” cleared — ${deck.cards.length} '
+              'cards, ${deck.cards.length * _tasksPerCard} answers.',
               textAlign: TextAlign.center,
               style: TextStyle(color: SprakTheme.inkSoft, fontSize: 15),
             ),
