@@ -62,18 +62,48 @@ class LlmService {
     required bool fromQuestion,
     required String subject,
   }) {
-    final from = fromQuestion ? 'question' : 'answer';
-    final to = fromQuestion ? 'answer' : 'question';
+    final from = fromQuestion ? 'prompt' : 'answer';
+    final to = fromQuestion ? 'answer' : 'prompt';
     return _complete(
       system: 'You complete flashcards for studying '
           '${subject.toLowerCase()}. The user sends the $from side of a '
           'card; respond with ONLY the text of the $to side — short, no '
           'explanations, and no unnecessary punctuation such as a trailing '
-          'period or surrounding quotes. Inline LaTeX between \$ signs is '
-          'rendered, so use it for mathematical notation.',
+          'period or surrounding quotes. A prompt side is a bare concept, '
+          'term, or expression ("Coulomb\'s law"), never phrased as a '
+          'question. Inline LaTeX between \$ signs is rendered, so use it '
+          'for mathematical notation.',
       history: [ChatMessage('user', text)],
       maxTokens: 512,
     );
+  }
+
+  /// Judges whether a typed [answer] is equivalent to the [expected] one
+  /// (different notation, formatting, or wording still counts).
+  static Future<bool> gradeAnswer({
+    required String question,
+    required String expected,
+    required String answer,
+    required String subject,
+  }) async {
+    final reply = await _complete(
+      system: 'You grade flashcard answers for studying '
+          '${subject.toLowerCase()}. Decide whether the learner\'s answer '
+          'is equivalent to the expected answer for the given prompt. '
+          'Accept equivalent notation, formatting, or wording (e.g. '
+          '\$2x\$ vs \$2*x\$, "1/2" vs "0.5", reordered terms, missing '
+          'LaTeX markup); reject answers with wrong or missing content. '
+          'Respond with ONLY one word: CORRECT or WRONG.',
+      history: [
+        ChatMessage(
+            'user',
+            'Prompt: $question\n'
+            'Expected answer: $expected\n'
+            'Learner\'s answer: $answer'),
+      ],
+      maxTokens: 16,
+    );
+    return reply.trim().toUpperCase().startsWith('CORRECT');
   }
 
   /// Streams a chat turn for the tutor conversation box as text deltas,
@@ -445,13 +475,17 @@ exactly this shape:
     final intro = subject != null
         ? '''
 You edit a flashcard deck for studying ${subject.toLowerCase()}. Each card
-has a "target" side (the question) and a "native" side (the answer). Inline
-LaTeX between \$ signs is rendered, so use it for mathematical notation.'''
+has a "target" side (the prompt) and a "native" side (the answer). Phrase
+the prompt side as the bare concept, term, or name itself — "Coulomb's
+law", NOT "What is Coulomb's law?". Never phrase it as a question unless
+the user explicitly asks for question-style cards. Inline LaTeX between
+\$ signs is rendered, so use it for mathematical notation.'''
         : '''
 You edit a flashcard deck for a language-learning app. The learner speaks
 $nativeLanguage and is learning $targetLanguage.''';
     final sides = subject != null
-        ? '"native" is the answer side, "target" is the question side.'
+        ? '"native" is the answer side, "target" is the prompt side '
+            '(a bare concept, term, or expression — not a question).'
         : '"native" is the $nativeLanguage side, "target" is the '
             '$targetLanguage side.';
     final system = '''

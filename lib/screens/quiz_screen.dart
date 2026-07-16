@@ -5,7 +5,9 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models.dart';
+import '../services/claude_service.dart';
 import '../services/keyboard_layout_service.dart';
+import '../services/llm_service.dart';
 import '../services/tts_service.dart';
 import '../storage.dart';
 import '../theme.dart';
@@ -42,12 +44,14 @@ class QuizScreen extends StatefulWidget {
   final Deck deck;
   final QuizMode mode;
   final QuizStyle style;
+  final GradingMode grading;
   const QuizScreen({
     super.key,
     required this.store,
     required this.deck,
     this.mode = QuizMode.whole,
     this.style = QuizStyle.typing,
+    this.grading = GradingMode.exact,
   });
 
   @override
@@ -101,6 +105,12 @@ class _QuizScreenState extends State<QuizScreen> {
   bool _reviewLogged = false;
 
   late QuizStyle _style;
+  late GradingMode _gradingMode;
+
+  /// True while an AI grade is in flight; the answer field is frozen and
+  /// re-checks are ignored.
+  bool _aiChecking = false;
+  String? _gradeError;
 
   /// Options for the current multiple-choice task, and which one the
   /// learner picked.
@@ -135,6 +145,7 @@ class _QuizScreenState extends State<QuizScreen> {
       });
     });
     _style = widget.style;
+    _gradingMode = widget.grading;
     final session = deck.session;
     if (widget.mode != QuizMode.resume ||
         session == null ||
@@ -275,6 +286,7 @@ class _QuizScreenState extends State<QuizScreen> {
     _groupIndex = groupIndex;
     _remaining = remaining;
     _style = session.style;
+    _gradingMode = session.grading;
     return true;
   }
 
@@ -293,6 +305,7 @@ class _QuizScreenState extends State<QuizScreen> {
                 QuizTaskRef(t.card.id, t.askInTarget, isChoice: t.isChoice),
             ],
             style: _style,
+            grading: _gradingMode,
           );
   }
 
@@ -320,11 +333,43 @@ class _QuizScreenState extends State<QuizScreen> {
       .replaceAll(RegExp(r'\s+'), ' ')
       .replaceAll('ё', 'е');
 
-  void _check() {
-    if (_phase != _Phase.asking) return;
-    _finishTask(_normalize(_answerController.text) == _normalize(expected));
-    // Keep focus in the (now read-only) field so Enter advances without
-    // reaching for the mouse.
+  Future<void> _check() async {
+    if (_phase != _Phase.asking || _aiChecking) return;
+    final answer = _answerController.text.trim();
+    final exactMatch = _normalize(answer) == _normalize(expected);
+
+    // Exact matches (and empty answers) never need the AI judge.
+    if (exactMatch || answer.isEmpty || _gradingMode == GradingMode.exact) {
+      _finishTask(exactMatch);
+      // Keep focus in the (now read-only) field so Enter advances without
+      // reaching for the mouse.
+      _answerFocus.requestFocus();
+      return;
+    }
+
+    setState(() {
+      _aiChecking = true;
+      _gradeError = null;
+    });
+    try {
+      final correct = await LlmService.gradeAnswer(
+        question: prompt,
+        expected: expected,
+        answer: answer,
+        subject: deck.isLanguage ? deck.targetLanguage : deck.kind.label,
+      );
+      if (!mounted) return;
+      _finishTask(correct);
+    } on LlmException catch (e) {
+      if (!mounted) return;
+      // Grade strictly instead of blocking — the "My answer was right"
+      // override still lets the learner correct it.
+      setState(() => _gradeError = 'AI grading unavailable (${e.message}) '
+          '— graded exactly instead.');
+      _finishTask(false);
+    } finally {
+      if (mounted) setState(() => _aiChecking = false);
+    }
     _answerFocus.requestFocus();
   }
 
@@ -415,6 +460,7 @@ class _QuizScreenState extends State<QuizScreen> {
       _phase = _Phase.asking;
       _lastCorrect = null;
       _selectedChoice = null;
+      _gradeError = null;
       _answerController.clear();
       _beginTask();
     });
@@ -713,7 +759,7 @@ class _QuizScreenState extends State<QuizScreen> {
             controller: _answerController,
             focusNode: _answerFocus,
             autofocus: true,
-            readOnly: _phase != _Phase.asking,
+            readOnly: _phase != _Phase.asking || _aiChecking,
             textAlign: TextAlign.center,
             style: const TextStyle(fontSize: 22),
             decoration: InputDecoration(
@@ -756,8 +802,22 @@ class _QuizScreenState extends State<QuizScreen> {
           _isChoice
               ? const SizedBox.shrink()
               : FilledButton(
-                  onPressed: _check,
-                  child: const Text('Check'),
+                  onPressed: _aiChecking ? null : _check,
+                  child: _aiChecking
+                      ? const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2),
+                            ),
+                            SizedBox(width: 10),
+                            Text('Checking…'),
+                          ],
+                        )
+                      : const Text('Check'),
                 )
         else ...[
           Container(
@@ -828,6 +888,15 @@ class _QuizScreenState extends State<QuizScreen> {
               ],
             ),
           ),
+          if (_gradeError != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                _gradeError!,
+                textAlign: TextAlign.center,
+                style: TextStyle(color: SprakTheme.inkSoft, fontSize: 12),
+              ),
+            ),
           const SizedBox(height: 14),
           FilledButton.icon(
             onPressed: _next,

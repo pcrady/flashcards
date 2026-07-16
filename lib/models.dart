@@ -159,6 +159,23 @@ enum QuizStyle {
       );
 }
 
+/// How typed answers are evaluated during a quiz.
+enum GradingMode {
+  /// Character-for-character comparison (after the usual normalization).
+  exact('exact'),
+
+  /// An LLM judges whether the answer is equivalent to the expected one.
+  ai('ai');
+
+  final String id;
+  const GradingMode(this.id);
+
+  static GradingMode fromId(String? id) => GradingMode.values.firstWhere(
+        (g) => g.id == id,
+        orElse: () => GradingMode.exact,
+      );
+}
+
 /// A card asked in one direction, referenced by ID for persistence.
 class QuizTaskRef {
   final String cardId;
@@ -185,12 +202,14 @@ class QuizSession {
   final int groupIndex;
   final List<QuizTaskRef> remaining;
   final QuizStyle style;
+  final GradingMode grading;
 
   QuizSession({
     required this.groups,
     required this.groupIndex,
     required this.remaining,
     this.style = QuizStyle.typing,
+    this.grading = GradingMode.exact,
   });
 
   Map<String, dynamic> toJson() => {
@@ -198,6 +217,7 @@ class QuizSession {
         'groupIndex': groupIndex,
         'remaining': remaining.map((t) => t.toJson()).toList(),
         'style': style.id,
+        'grading': grading.id,
       };
 
   factory QuizSession.fromJson(Map<String, dynamic> json) => QuizSession(
@@ -211,6 +231,7 @@ class QuizSession {
             QuizTaskRef.fromJson(t as Map<String, dynamic>),
         ],
         style: QuizStyle.fromId(json['style'] as String?),
+        grading: GradingMode.fromId(json['grading'] as String?),
       );
 }
 

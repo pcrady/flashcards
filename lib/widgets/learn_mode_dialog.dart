@@ -62,8 +62,10 @@ Future<void> startLearning(
   if (mode == null || !context.mounted) return;
 
   QuizStyle? style;
+  var grading = GradingMode.exact;
   if (mode == QuizMode.resume) {
     style = session?.style ?? QuizStyle.typing;
+    grading = session?.grading ?? GradingMode.exact;
   } else {
     style = await showDialog<QuizStyle>(
       context: context,
@@ -109,12 +111,58 @@ Future<void> startLearning(
       ),
     );
     if (style == null || !context.mounted) return;
+
+    // Typed answers in math/general decks can be judged by AI, since
+    // equivalent notation ("0.5" vs "1/2") shouldn't count as wrong.
+    if (!deck.isLanguage && style != QuizStyle.multipleChoice) {
+      final picked = await showDialog<GradingMode>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('How should typed answers be graded?'),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _ModeTile(
+                  icon: Icons.auto_awesome,
+                  title: 'AI grading',
+                  subtitle: 'An AI accepts equivalent answers — different '
+                      'notation or wording still counts.',
+                  onTap: () => Navigator.pop(context, GradingMode.ai),
+                ),
+                const SizedBox(height: 10),
+                _ModeTile(
+                  icon: Icons.spellcheck,
+                  title: 'Exact match',
+                  subtitle: 'Character-for-character comparison (ignoring '
+                      'case and punctuation).',
+                  onTap: () => Navigator.pop(context, GradingMode.exact),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+          ],
+        ),
+      );
+      if (picked == null || !context.mounted) return;
+      grading = picked;
+    }
   }
 
   Navigator.of(context).push(
     MaterialPageRoute(
-      builder: (_) =>
-          QuizScreen(store: store, deck: deck, mode: mode, style: style!),
+      builder: (_) => QuizScreen(
+          store: store,
+          deck: deck,
+          mode: mode,
+          style: style!,
+          grading: grading),
     ),
   );
 }
