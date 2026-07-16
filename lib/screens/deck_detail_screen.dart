@@ -31,16 +31,41 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
   final _targetController = TextEditingController();
   final _nativeFocus = FocusNode();
   final _targetFocus = FocusNode();
-  final _suggestionFocus = FocusNode();
+  final _baseFormFocus = FocusNode();
+  final _translationFocus = FocusNode();
 
   bool _translating = false;
   String? _translateError;
   int _requestSeq = 0;
 
-  /// Pending translation suggestion, shown as a dropdown the user must
-  /// pick (click, or ↓ then Enter) before it lands in the text box.
-  String? _suggestion;
+  /// Pending suggestions, shown as dropdowns the user must pick (click, or
+  /// ↓ then Enter) before they land in the text boxes: when the typed word
+  /// was inflected, its basic dictionary form appears under the field the
+  /// user typed in, and the translation under the other field.
+  String? _baseFormSuggestion;
+  String? _translationSuggestion;
   bool _suggestionForTarget = true;
+
+  /// Guards the controller listeners while a suggestion is being written
+  /// into a field programmatically, so it doesn't clear the other one.
+  bool _applyingSuggestion = false;
+
+  /// Last seen text per field, so the controller listeners (which also
+  /// fire on selection/focus changes) can tell real edits apart.
+  String _lastNativeText = '';
+  String _lastTargetText = '';
+
+  bool get _hasSuggestion =>
+      _baseFormSuggestion != null || _translationSuggestion != null;
+
+  /// The field the user typed the word into (the one a dictionary-form
+  /// suggestion applies to).
+  TextEditingController get _sourceController =>
+      _suggestionForTarget ? _nativeController : _targetController;
+  TextEditingController get _destController =>
+      _suggestionForTarget ? _targetController : _nativeController;
+  FocusNode get _sourceFocus =>
+      _suggestionForTarget ? _nativeFocus : _targetFocus;
 
   Deck get deck => widget.deck;
 
@@ -57,18 +82,37 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
     _targetController.dispose();
     _nativeFocus.dispose();
     _targetFocus.dispose();
-    _suggestionFocus.dispose();
+    _baseFormFocus.dispose();
+    _translationFocus.dispose();
     super.dispose();
   }
 
   void _onTyped({required bool fromNative}) {
+    // The controller also notifies on selection/focus changes — only a
+    // real text change counts as typing.
+    final text =
+        (fromNative ? _nativeController : _targetController).text;
+    final changed = fromNative
+        ? text != _lastNativeText
+        : text != _lastTargetText;
+    if (fromNative) {
+      _lastNativeText = text;
+    } else {
+      _lastTargetText = text;
+    }
+    if (!changed || _applyingSuggestion) return;
     // Only react to typing in the focused field, so programmatic fills of
     // the other field don't dismiss things unexpectedly.
     final focused = fromNative ? _nativeFocus.hasFocus : _targetFocus.hasFocus;
     if (!focused) return;
 
-    // Typing invalidates a pending suggestion.
-    if (_suggestion != null) setState(() => _suggestion = null);
+    // Typing invalidates pending suggestions.
+    if (_hasSuggestion) {
+      setState(() {
+        _baseFormSuggestion = null;
+        _translationSuggestion = null;
+      });
+    }
   }
 
   /// Enter in a text field: accept a pending suggestion; otherwise
@@ -80,8 +124,8 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
       (fromNative ? _nativeFocus : _targetFocus).requestFocus();
       return;
     }
-    if (_suggestion != null) {
-      _acceptSuggestion();
+    if (_hasSuggestion) {
+      _acceptSuggestions();
       return;
     }
     final source = fromNative ? _nativeController : _targetController;
@@ -106,14 +150,15 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
       _translateError = null;
     });
     try {
-      final result = await LlmService.translate(
+      final result = await LlmService.suggestCard(
         text: text,
         from: fromNative ? deck.nativeLanguage : deck.targetLanguage,
         to: fromNative ? deck.targetLanguage : deck.nativeLanguage,
       );
       if (!mounted || seq != _requestSeq) return;
       setState(() {
-        _suggestion = result;
+        _baseFormSuggestion = result.baseForm;
+        _translationSuggestion = result.translation;
         _suggestionForTarget = fromNative;
       });
     } on LlmException catch (e) {
@@ -126,35 +171,67 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
     }
   }
 
-  void _acceptSuggestion() {
-    final suggestion = _suggestion;
-    if (suggestion == null) return;
-    final dest = _suggestionForTarget ? _targetController : _nativeController;
-    dest.text = suggestion;
-    setState(() => _suggestion = null);
-    // Return focus to the field the user was typing in, so Enter adds
-    // the card straight away.
-    (_suggestionForTarget ? _nativeFocus : _targetFocus).requestFocus();
+  void _fill(TextEditingController dest, String text) {
+    _applyingSuggestion = true;
+    dest.text = text;
+    _applyingSuggestion = false;
   }
 
-  void _dismissSuggestion() {
-    if (_suggestion == null) return;
-    setState(() => _suggestion = null);
-    (_suggestionForTarget ? _nativeFocus : _targetFocus).requestFocus();
+  /// Enter accepts everything pending: the dictionary form replaces what
+  /// the user typed and the translation fills the other box.
+  void _acceptSuggestions() {
+    final base = _baseFormSuggestion;
+    final translation = _translationSuggestion;
+    if (base == null && translation == null) return;
+    setState(() {
+      _baseFormSuggestion = null;
+      _translationSuggestion = null;
+    });
+    if (base != null) _fill(_sourceController, base);
+    if (translation != null) _fill(_destController, translation);
+    // Return focus to the field the user was typing in, so Enter adds
+    // the card straight away.
+    _sourceFocus.requestFocus();
+  }
+
+  void _acceptBaseForm() {
+    final base = _baseFormSuggestion;
+    if (base == null) return;
+    setState(() => _baseFormSuggestion = null);
+    _fill(_sourceController, base);
+    _sourceFocus.requestFocus();
+  }
+
+  void _acceptTranslation() {
+    final translation = _translationSuggestion;
+    if (translation == null) return;
+    setState(() => _translationSuggestion = null);
+    _fill(_destController, translation);
+    _sourceFocus.requestFocus();
+  }
+
+  void _dismissSuggestions() {
+    if (!_hasSuggestion) return;
+    setState(() {
+      _baseFormSuggestion = null;
+      _translationSuggestion = null;
+    });
+    _sourceFocus.requestFocus();
   }
 
   /// Intercepts ↓ / Esc anywhere in the add-card panel so the suggestion
-  /// dropdown is keyboard-reachable from the text fields.
+  /// dropdowns are keyboard-reachable from the text fields.
   KeyEventResult _handlePanelKey(FocusNode node, KeyEvent event) {
-    if (event is! KeyDownEvent || _suggestion == null) {
+    if (event is! KeyDownEvent || !_hasSuggestion) {
       return KeyEventResult.ignored;
     }
     if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
-      _suggestionFocus.requestFocus();
+      (_baseFormSuggestion != null ? _baseFormFocus : _translationFocus)
+          .requestFocus();
       return KeyEventResult.handled;
     }
     if (event.logicalKey == LogicalKeyboardKey.escape) {
-      _dismissSuggestion();
+      _dismissSuggestions();
       return KeyEventResult.handled;
     }
     return KeyEventResult.ignored;
@@ -172,7 +249,8 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
     _targetController.clear();
     setState(() {
       _translateError = null;
-      _suggestion = null;
+      _baseFormSuggestion = null;
+      _translationSuggestion = null;
     });
     _nativeFocus.requestFocus();
   }
@@ -236,6 +314,32 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
         ].join(', ')),
       ),
     );
+  }
+
+  /// The suggestion dropdown(s) that belong under one of the two text
+  /// fields: the dictionary form goes under the field the user typed in,
+  /// the translation under the other one.
+  List<Widget> _suggestionsUnder({required bool isNative}) {
+    final typedHere = isNative == _suggestionForTarget;
+    final suggestion =
+        typedHere ? _baseFormSuggestion : _translationSuggestion;
+    if (suggestion == null) return const [];
+    return [
+      Padding(
+        padding: const EdgeInsets.only(top: 8),
+        child: _SuggestionBox(
+          label: typedHere
+              ? 'Dictionary form'
+              : (isNative ? deck.nativeLanguage : deck.targetLanguage),
+          value: suggestion,
+          icon: typedHere
+              ? Icons.menu_book_outlined
+              : Icons.subdirectory_arrow_right,
+          focusNode: typedHere ? _baseFormFocus : _translationFocus,
+          onTap: typedHere ? _acceptBaseForm : _acceptTranslation,
+        ),
+      ),
+    ];
   }
 
   @override
@@ -303,8 +407,10 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                         const SizedBox(height: 4),
                         Text(
                           'Type in either language and press Enter to '
-                          'translate. Enter again accepts the suggestion, '
-                          'and once more adds the card.',
+                          'translate. If you typed an inflected form, the '
+                          'dictionary form is suggested under your field. '
+                          'Enter accepts the suggestions, and once more '
+                          'adds the card.',
                           style: TextStyle(
                               color: SprakTheme.inkSoft, fontSize: 13),
                         ),
@@ -313,18 +419,25 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Expanded(
-                              child: TextField(
-                                controller: _nativeController,
-                                focusNode: _nativeFocus,
-                                decoration: InputDecoration(
-                                  labelText: deck.nativeLanguage,
-                                ),
-                                // Keep focus on submit — the default
-                                // behavior unfocuses the field, which
-                                // swallows rapid Enter presses.
-                                onEditingComplete: () {},
-                                onSubmitted: (_) =>
-                                    _onSubmit(fromNative: true),
+                              child: Column(
+                                crossAxisAlignment:
+                                    CrossAxisAlignment.stretch,
+                                children: [
+                                  TextField(
+                                    controller: _nativeController,
+                                    focusNode: _nativeFocus,
+                                    decoration: InputDecoration(
+                                      labelText: deck.nativeLanguage,
+                                    ),
+                                    // Keep focus on submit — the default
+                                    // behavior unfocuses the field, which
+                                    // swallows rapid Enter presses.
+                                    onEditingComplete: () {},
+                                    onSubmitted: (_) =>
+                                        _onSubmit(fromNative: true),
+                                  ),
+                                  ..._suggestionsUnder(isNative: true),
+                                ],
                               ),
                             ),
                             Padding(
@@ -341,15 +454,22 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                                       color: SprakTheme.inkSoft),
                             ),
                             Expanded(
-                              child: TextField(
-                                controller: _targetController,
-                                focusNode: _targetFocus,
-                                decoration: InputDecoration(
-                                  labelText: deck.targetLanguage,
-                                ),
-                                onEditingComplete: () {},
-                                onSubmitted: (_) =>
-                                    _onSubmit(fromNative: false),
+                              child: Column(
+                                crossAxisAlignment:
+                                    CrossAxisAlignment.stretch,
+                                children: [
+                                  TextField(
+                                    controller: _targetController,
+                                    focusNode: _targetFocus,
+                                    decoration: InputDecoration(
+                                      labelText: deck.targetLanguage,
+                                    ),
+                                    onEditingComplete: () {},
+                                    onSubmitted: (_) =>
+                                        _onSubmit(fromNative: false),
+                                  ),
+                                  ..._suggestionsUnder(isNative: false),
+                                ],
                               ),
                             ),
                             const SizedBox(width: 14),
@@ -363,64 +483,6 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                             ),
                           ],
                         ),
-                        if (_suggestion != null)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 10),
-                            child: Material(
-                              color: SprakTheme.panel,
-                              borderRadius: BorderRadius.circular(12),
-                              child: InkWell(
-                                focusNode: _suggestionFocus,
-                                borderRadius: BorderRadius.circular(12),
-                                focusColor:
-                                    SprakTheme.fjord.withValues(alpha: 0.15),
-                                onTap: _acceptSuggestion,
-                                child: Container(
-                                  width: double.infinity,
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 14, vertical: 10),
-                                  decoration: BoxDecoration(
-                                    borderRadius: BorderRadius.circular(12),
-                                    border:
-                                        Border.all(color: SprakTheme.line),
-                                  ),
-                                  child: Row(
-                                    children: [
-                                      Icon(Icons.subdirectory_arrow_right,
-                                          size: 18,
-                                          color: SprakTheme.fjord),
-                                      const SizedBox(width: 10),
-                                      Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            _suggestionForTarget
-                                                ? deck.targetLanguage
-                                                : deck.nativeLanguage,
-                                            style: TextStyle(
-                                                color: SprakTheme.inkSoft,
-                                                fontSize: 11,
-                                                letterSpacing: 0.5),
-                                          ),
-                                          Text(_suggestion!,
-                                              style: SprakTheme.vocab(
-                                                  size: 18)),
-                                        ],
-                                      ),
-                                      const Spacer(),
-                                      Text(
-                                        '⏎ to insert',
-                                        style: TextStyle(
-                                            color: SprakTheme.inkSoft,
-                                            fontSize: 12),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
                         if (_translateError != null)
                           Padding(
                             padding: const EdgeInsets.only(top: 8),
@@ -553,6 +615,72 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                           );
                         },
                       ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// One clickable suggestion dropdown shown under a text field in the
+/// add-card panel.
+class _SuggestionBox extends StatelessWidget {
+  final String label;
+  final String value;
+  final IconData icon;
+  final FocusNode focusNode;
+  final VoidCallback onTap;
+
+  const _SuggestionBox({
+    required this.label,
+    required this.value,
+    required this.icon,
+    required this.focusNode,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: SprakTheme.panel,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        focusNode: focusNode,
+        borderRadius: BorderRadius.circular(12),
+        focusColor: SprakTheme.fjord.withValues(alpha: 0.15),
+        onTap: onTap,
+        child: Container(
+          padding:
+              const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: SprakTheme.line),
+          ),
+          child: Row(
+            children: [
+              Icon(icon, size: 18, color: SprakTheme.fjord),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      label,
+                      style: TextStyle(
+                          color: SprakTheme.inkSoft,
+                          fontSize: 11,
+                          letterSpacing: 0.5),
+                    ),
+                    Text(value, style: SprakTheme.vocab(size: 17)),
+                  ],
+                ),
+              ),
+              Text(
+                '⏎ to insert',
+                style:
+                    TextStyle(color: SprakTheme.inkSoft, fontSize: 12),
               ),
             ],
           ),

@@ -31,6 +31,18 @@ class _SprakAppState extends State<SprakApp> {
       title: 'språk',
       debugShowCheckedModeBanner: false,
       theme: SprakTheme.dark(),
+      // Make all text in the app selectable (for copying words). The
+      // Overlay hosts SelectionArea's handles/context menu — the builder
+      // sits above the Navigator, so there isn't one yet.
+      builder: (context, child) => Overlay(
+        initialEntries: [
+          OverlayEntry(
+            builder: (_) => SelectionArea(
+              child: child ?? const SizedBox.shrink(),
+            ),
+          ),
+        ],
+      ),
       home: DeckListScreen(store: store),
     );
   }

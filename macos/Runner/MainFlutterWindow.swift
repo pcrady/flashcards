@@ -10,6 +10,8 @@ class MainFlutterWindow: NSWindow {
     self.title = "språk"
 
     RegisterGeneratedPlugins(registry: flutterViewController)
+    KeyboardLayoutChannel.register(
+      with: flutterViewController.engine.binaryMessenger)
 
     super.awakeFromNib()
   }

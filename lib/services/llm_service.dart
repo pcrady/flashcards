@@ -71,19 +71,54 @@ class LlmService {
     );
   }
 
-  /// Translates [text] from [from] into [to], returning only the translation.
-  static Future<String> translate({
+  /// Analyzes [text] (a word or phrase in [from]) for the add-card flow:
+  /// returns its basic dictionary form when the input is inflected
+  /// (null when it already is the dictionary form) and its [to] translation.
+  static Future<({String? baseForm, String translation})> suggestCard({
     required String text,
     required String from,
     required String to,
-  }) {
-    return _complete(
-      system: 'You are a translation engine. Translate the text the user '
-          'provides from $from into $to. Respond with ONLY the translation — '
-          'no explanations, no quotes, no transliteration.',
+  }) async {
+    final system = '''
+You help build flashcards for a language-learning app. The user sends one
+word or short phrase in $from.
+
+Respond with ONLY a JSON object — no markdown fences, no commentary — in
+exactly this shape:
+{"base_form": "..." or null, "translation": "..."}
+
+- "base_form": if the input is an inflected form (a conjugated verb, a
+  plural or declined noun, a comparative/superlative adjective, etc.), the
+  basic dictionary form (lemma) in $from, keeping the input's
+  capitalization style. If the input already is the dictionary form, or is
+  a phrase where a single lemma does not apply, use null.
+- "translation": the $to translation of the base form when there is one,
+  otherwise of the input as given. Only the translation — no explanations,
+  no quotes, no transliteration.''';
+
+    final reply = await _complete(
+      system: system,
       history: [ChatMessage('user', text)],
       maxTokens: 256,
     );
+
+    final decoded = _extractJson(reply);
+    if (decoded is! Map) {
+      throw LlmException('The model did not return a valid suggestion.');
+    }
+    final translation = (decoded['translation'] as String?)?.trim();
+    if (translation == null || translation.isEmpty) {
+      throw LlmException('The model did not return a translation.');
+    }
+    final rawBase = decoded['base_form'];
+    var baseForm =
+        rawBase is String && rawBase.trim().isNotEmpty ? rawBase.trim() : null;
+    // Don't suggest a "correction" identical to what was typed.
+    if (baseForm != null &&
+        baseForm.toLowerCase() == text.trim().toLowerCase()) {
+      baseForm = null;
+    }
+    return (baseForm: baseForm, translation: translation);
   }
 
   /// Runs one completion against whichever provider is configured.

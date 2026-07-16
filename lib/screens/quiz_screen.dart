@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../models.dart';
+import '../services/keyboard_layout_service.dart';
 import '../services/tts_service.dart';
 import '../storage.dart';
 import '../theme.dart';
@@ -52,6 +53,10 @@ class _QuizScreenState extends State<QuizScreen> {
   final _answerController = TextEditingController();
   final _answerFocus = FocusNode();
   final _random = Random();
+
+  /// Live OS keyboard layout (e.g. "U.S.", "Russian"), shown under the
+  /// answer field. One stream for the screen's lifetime.
+  final _keyboardLayout = KeyboardLayoutService.layoutName();
 
   late List<List<CardItem>> _groups;
   int _groupIndex = 0;
@@ -451,6 +456,29 @@ class _QuizScreenState extends State<QuizScreen> {
           // field, which swallows rapid Enter presses.
           onEditingComplete: () {},
           onSubmitted: (_) => _phase == _Phase.asking ? _check() : _next(),
+        ),
+        StreamBuilder<String?>(
+          stream: _keyboardLayout,
+          builder: (context, snapshot) {
+            final layout = snapshot.data;
+            if (layout == null) return const SizedBox.shrink();
+            return Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.keyboard_alt_outlined,
+                      size: 16, color: SprakTheme.inkSoft),
+                  const SizedBox(width: 6),
+                  Text(
+                    'Keyboard: $layout',
+                    style: TextStyle(
+                        color: SprakTheme.inkSoft, fontSize: 12.5),
+                  ),
+                ],
+              ),
+            );
+          },
         ),
         const SizedBox(height: 20),
         if (_phase == _Phase.asking)
