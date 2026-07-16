@@ -4,6 +4,7 @@ import '../models.dart';
 import '../storage.dart';
 import '../theme.dart';
 import '../widgets/learn_mode_dialog.dart';
+import '../widgets/mastery.dart';
 import '../widgets/rename_deck_dialog.dart';
 import 'deck_detail_screen.dart';
 import 'settings_screen.dart';
@@ -250,7 +251,14 @@ class _DeckCard extends StatelessWidget {
                 '${deck.nativeLanguage} → ${deck.targetLanguage}',
                 style: TextStyle(color: SprakTheme.inkSoft, fontSize: 13),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 10),
+              if (deck.cards.isNotEmpty) ...[
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: MasteryBar(deck, height: 5),
+                ),
+                const SizedBox(height: 8),
+              ],
               Row(
                 children: [
                   Container(
@@ -267,6 +275,10 @@ class _DeckCard extends StatelessWidget {
                       style: const TextStyle(fontSize: 12),
                     ),
                   ),
+                  if (deck.retention != null) ...[
+                    const SizedBox(width: 10),
+                    RetentionLabel(deck, fontSize: 12),
+                  ],
                   const Spacer(),
                   FilledButton.tonalIcon(
                     style: FilledButton.styleFrom(

@@ -91,6 +91,15 @@ class _QuizScreenState extends State<QuizScreen> {
   int _correctCount = 0;
   int _wrongCount = 0;
 
+  /// Tasks already answered this session — only the FIRST attempt at a
+  /// task lands in the card's review history, so within-group retries
+  /// don't inflate retention.
+  final Set<String> _attempted = {};
+
+  /// Whether the current task's outcome was written to the review
+  /// history, so an "I was right" override can amend the same entry.
+  bool _reviewLogged = false;
+
   late QuizStyle _style;
 
   /// Options for the current multiple-choice task, and which one the
@@ -324,9 +333,13 @@ class _QuizScreenState extends State<QuizScreen> {
   }
 
   void _finishTask(bool correct) {
+    final firstAttempt =
+        _attempted.add('${card.id}|$_askInTarget|$_isChoice');
+    _reviewLogged = firstAttempt;
     setState(() {
       _phase = _Phase.answered;
       _lastCorrect = correct;
+      if (firstAttempt) card.addReview(correct);
       if (correct) {
         _correctCount++;
         card.timesCorrect++;
@@ -338,6 +351,27 @@ class _QuizScreenState extends State<QuizScreen> {
     widget.store.save();
     // Always let the learner hear the target-language side.
     TtsService().speak(card.target, ttsLocaleFor(deck.targetLanguage));
+  }
+
+  /// "I was right" override: e.g. the answer was "I'm getting ready" and
+  /// the learner typed "i am getting ready". Rewrites every trace of the
+  /// wrong mark — score, card stats, review history, group rotation — so
+  /// the saved state is identical to a character-for-character answer.
+  void _markActuallyCorrect() {
+    if (_phase != _Phase.answered || _lastCorrect != false) return;
+    setState(() {
+      _lastCorrect = true;
+      _correctCount++;
+      _wrongCount--;
+      card.timesCorrect++;
+      card.timesWrong--;
+      if (_reviewLogged && card.reviews.isNotEmpty) {
+        final last = card.reviews.last;
+        card.reviews[card.reviews.length - 1] = CardReview(last.at, true);
+      }
+    });
+    widget.store.save();
+    _focusTask();
   }
 
   void _next() {
@@ -398,6 +432,7 @@ class _QuizScreenState extends State<QuizScreen> {
   }
 
   void _studyAgain() {
+    _attempted.clear();
     setState(() {
       _buildGroups(_shuffled());
       _phase = _Phase.asking;
@@ -748,9 +783,37 @@ class _QuizScreenState extends State<QuizScreen> {
                   ),
                 ),
                 const SizedBox(height: 6),
-                TexText('$prompt  →  $expected',
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 17)),
+                if (_lastCorrect!)
+                  TexText('$prompt  →  $expected',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 17))
+                else ...[
+                  // Missed — make the correct answer the star of the card.
+                  const SizedBox(height: 4),
+                  TexText(expected,
+                      textAlign: TextAlign.center,
+                      style: SprakTheme.vocab(size: 28)),
+                  const SizedBox(height: 4),
+                  TexText(prompt,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                          color: SprakTheme.inkSoft, fontSize: 14)),
+                ],
+                if (!_lastCorrect! && !_isChoice) ...[
+                  const SizedBox(height: 6),
+                  TextButton.icon(
+                    onPressed: _markActuallyCorrect,
+                    icon: const Icon(Icons.check_circle_outline, size: 16),
+                    style: TextButton.styleFrom(
+                      foregroundColor: SprakTheme.success,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 8),
+                      textStyle: const TextStyle(
+                          fontSize: 13, fontWeight: FontWeight.w700),
+                    ),
+                    label: const Text('My answer was right — count it'),
+                  ),
+                ],
               ],
             ),
           ),

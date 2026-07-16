@@ -10,6 +10,7 @@ import '../theme.dart';
 import '../widgets/ai_deck_edit_dialog.dart';
 import '../widgets/edit_card_dialog.dart';
 import '../widgets/learn_mode_dialog.dart';
+import '../widgets/mastery.dart';
 import '../widgets/rename_deck_dialog.dart';
 import '../widgets/tex_text.dart';
 
@@ -358,6 +359,37 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
     ];
   }
 
+  /// Colored-dot legend for the mastery bar, non-empty buckets only.
+  Widget _buildMasteryLegend() {
+    final counts = deck.masteryCounts;
+    return Wrap(
+      spacing: 14,
+      runSpacing: 4,
+      children: [
+        for (final m in masteryOrder)
+          if (counts[m]! > 0)
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: masteryColor(m),
+                  ),
+                ),
+                const SizedBox(width: 5),
+                Text(
+                  '${counts[m]} ${masteryLabel(m).toLowerCase()}',
+                  style: TextStyle(color: SprakTheme.inkSoft, fontSize: 12),
+                ),
+              ],
+            ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -514,6 +546,28 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                   ),
                 ),
               ),
+              // --- Retention stats ---
+              if (deck.cards.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 0, 24, 10),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            MasteryBar(deck, height: 7),
+                            const SizedBox(height: 6),
+                            _buildMasteryLegend(),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 20),
+                      RetentionLabel(deck),
+                    ],
+                  ),
+                ),
               // --- Sort bar ---
               if (deck.cards.isNotEmpty)
                 Padding(
@@ -597,6 +651,18 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                               trailing: Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
+                                  Tooltip(
+                                    message: masteryTooltip(card),
+                                    child: Container(
+                                      width: 9,
+                                      height: 9,
+                                      decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        color: masteryColor(card.mastery),
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
                                   _StatChip(
                                     icon: Icons.check,
                                     color: SprakTheme.success,

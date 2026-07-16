@@ -46,6 +46,25 @@ String flagFor(String languageName) {
   return '🌍';
 }
 
+/// One first-attempt answer to a card, kept as the card's review history
+/// so retention can be measured over time.
+class CardReview {
+  final DateTime at;
+  final bool correct;
+  CardReview(this.at, this.correct);
+
+  Map<String, dynamic> toJson() =>
+      {'at': at.millisecondsSinceEpoch, 'correct': correct};
+
+  factory CardReview.fromJson(Map<String, dynamic> json) => CardReview(
+        DateTime.fromMillisecondsSinceEpoch(json['at'] as int? ?? 0),
+        json['correct'] as bool? ?? false,
+      );
+}
+
+/// How well a card is currently retained, derived from its review history.
+enum Mastery { newCard, learning, strong, fading }
+
 class CardItem {
   final String id;
   String native;
@@ -53,13 +72,49 @@ class CardItem {
   int timesCorrect;
   int timesWrong;
 
+  /// First-attempt outcomes, oldest first (retries within a study group
+  /// are not recorded).
+  final List<CardReview> reviews;
+
   CardItem({
     String? id,
     required this.native,
     required this.target,
     this.timesCorrect = 0,
     this.timesWrong = 0,
-  }) : id = id ?? _uuid.v4();
+    List<CardReview>? reviews,
+  })  : id = id ?? _uuid.v4(),
+        reviews = reviews ?? [];
+
+  /// Consecutive correct answers at the end of the history.
+  int get streak {
+    var s = 0;
+    for (var i = reviews.length - 1; i >= 0 && reviews[i].correct; i--) {
+      s++;
+    }
+    return s;
+  }
+
+  DateTime? get lastReviewedAt =>
+      reviews.isEmpty ? null : reviews.last.at;
+
+  /// New: never studied. Learning: fewer than two correct answers in a
+  /// row. Strong: on a streak and seen recently. Fading: was strong but
+  /// untouched for 14+ days — presumed decaying.
+  Mastery get mastery {
+    if (reviews.isEmpty) return Mastery.newCard;
+    if (streak < 2) return Mastery.learning;
+    final idle = DateTime.now().difference(reviews.last.at);
+    return idle.inDays >= 14 ? Mastery.fading : Mastery.strong;
+  }
+
+  /// Records a first-attempt outcome, capping the history length.
+  void addReview(bool correct) {
+    reviews.add(CardReview(DateTime.now(), correct));
+    if (reviews.length > 200) {
+      reviews.removeRange(0, reviews.length - 200);
+    }
+  }
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -67,6 +122,8 @@ class CardItem {
         'target': target,
         'timesCorrect': timesCorrect,
         'timesWrong': timesWrong,
+        if (reviews.isNotEmpty)
+          'reviews': reviews.map((r) => r.toJson()).toList(),
       };
 
   factory CardItem.fromJson(Map<String, dynamic> json) => CardItem(
@@ -75,6 +132,10 @@ class CardItem {
         target: json['target'] as String? ?? '',
         timesCorrect: json['timesCorrect'] as int? ?? 0,
         timesWrong: json['timesWrong'] as int? ?? 0,
+        reviews: [
+          for (final r in json['reviews'] as List<dynamic>? ?? [])
+            CardReview.fromJson(r as Map<String, dynamic>),
+        ],
       );
 }
 
@@ -166,6 +227,35 @@ class Deck {
 
   /// In-progress study session, if the learner left mid-deck.
   QuizSession? session;
+
+  /// True retention over the last 30 days: of first attempts on cards the
+  /// learner had already studied in an earlier sitting (12h+ before), the
+  /// share answered correctly. Null until there are re-encounters.
+  double? get retention {
+    var seen = 0, correct = 0;
+    final cutoff = DateTime.now().subtract(const Duration(days: 30));
+    for (final card in cards) {
+      if (card.reviews.length < 2) continue;
+      final firstAt = card.reviews.first.at;
+      for (final r in card.reviews.skip(1)) {
+        if (r.at.isBefore(cutoff)) continue;
+        // Same-sitting tasks (e.g. the other direction minutes later)
+        // aren't evidence of retention — require a later sitting.
+        if (r.at.difference(firstAt) < const Duration(hours: 12)) continue;
+        seen++;
+        if (r.correct) correct++;
+      }
+    }
+    return seen == 0 ? null : correct / seen;
+  }
+
+  Map<Mastery, int> get masteryCounts {
+    final counts = {for (final m in Mastery.values) m: 0};
+    for (final c in cards) {
+      counts[c.mastery] = counts[c.mastery]! + 1;
+    }
+    return counts;
+  }
 
   Deck({
     String? id,
