@@ -214,9 +214,26 @@ class QuizSession {
       );
 }
 
+/// A named group of decks shown as a folder on the home screen.
+class Folder {
+  final String id;
+  String name;
+  Folder({String? id, required this.name}) : id = id ?? _uuid.v4();
+
+  Map<String, dynamic> toJson() => {'id': id, 'name': name};
+
+  factory Folder.fromJson(Map<String, dynamic> json) => Folder(
+        id: json['id'] as String?,
+        name: json['name'] as String? ?? 'Untitled',
+      );
+}
+
 class Deck {
   final String id;
   String name;
+
+  /// ID of the folder this deck lives in, or null for the home screen.
+  String? folderId;
 
   /// The language being learned (e.g. Russian).
   String targetLanguage;
@@ -264,6 +281,7 @@ class Deck {
     required this.nativeLanguage,
     List<CardItem>? cards,
     this.session,
+    this.folderId,
   })  : id = id ?? _uuid.v4(),
         cards = cards ?? [];
 
@@ -274,6 +292,7 @@ class Deck {
         'nativeLanguage': nativeLanguage,
         'cards': cards.map((c) => c.toJson()).toList(),
         if (session != null) 'session': session!.toJson(),
+        if (folderId != null) 'folderId': folderId,
       };
 
   factory Deck.fromJson(Map<String, dynamic> json) => Deck(
@@ -287,5 +306,6 @@ class Deck {
         session: json['session'] != null
             ? QuizSession.fromJson(json['session'] as Map<String, dynamic>)
             : null,
+        folderId: json['folderId'] as String?,
       );
 }
