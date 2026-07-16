@@ -58,6 +58,10 @@ class _QuizScreenState extends State<QuizScreen> {
   /// answer field. One stream for the screen's lifetime.
   final _keyboardLayout = KeyboardLayoutService.layoutName();
 
+  /// The input source active when the quiz opened, restored on exit so
+  /// auto-switching doesn't leak into the rest of the system.
+  String? _originalLayoutId;
+
   late List<List<CardItem>> _groups;
   int _groupIndex = 0;
 
@@ -81,14 +85,15 @@ class _QuizScreenState extends State<QuizScreen> {
   @override
   void initState() {
     super.initState();
+    KeyboardLayoutService.currentId().then((id) => _originalLayoutId = id);
     final session = deck.session;
-    if (widget.mode == QuizMode.resume &&
-        session != null &&
-        _restore(session)) {
-      return;
+    if (widget.mode != QuizMode.resume ||
+        session == null ||
+        !_restore(session)) {
+      _buildGroups(
+          widget.mode == QuizMode.mistakes ? _mistakeOrdered() : _shuffled());
     }
-    _buildGroups(
-        widget.mode == QuizMode.mistakes ? _mistakeOrdered() : _shuffled());
+    _syncKeyboard();
   }
 
   @override
@@ -96,7 +101,19 @@ class _QuizScreenState extends State<QuizScreen> {
     _answerController.dispose();
     _answerFocus.dispose();
     TtsService().stop();
+    final original = _originalLayoutId;
+    if (original != null) KeyboardLayoutService.selectById(original);
     super.dispose();
+  }
+
+  /// Switches the OS keyboard to the language the answer should be typed
+  /// in. Fire-and-forget: when no matching layout is installed nothing
+  /// changes, and the indicator keeps showing the real layout.
+  void _syncKeyboard() {
+    if (_remaining.isEmpty) return;
+    final language = _askInTarget ? deck.nativeLanguage : deck.targetLanguage;
+    KeyboardLayoutService.selectForLanguage(
+        ttsLocaleFor(language).split('-').first);
   }
 
   /// Cleared tasks (card × direction) across all groups so far.
@@ -262,6 +279,7 @@ class _QuizScreenState extends State<QuizScreen> {
       _lastCorrect = null;
       _answerController.clear();
     });
+    _syncKeyboard();
     _answerFocus.requestFocus();
   }
 
@@ -275,6 +293,7 @@ class _QuizScreenState extends State<QuizScreen> {
     });
     _persistSession();
     widget.store.save();
+    _syncKeyboard();
     _answerFocus.requestFocus();
   }
 
@@ -288,6 +307,7 @@ class _QuizScreenState extends State<QuizScreen> {
       _answerController.clear();
     });
     widget.store.save();
+    _syncKeyboard();
     _answerFocus.requestFocus();
   }
 
