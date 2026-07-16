@@ -27,6 +27,10 @@ enum ChatPosition {
 class ChatBox extends StatefulWidget {
   final String targetLanguage;
   final String nativeLanguage;
+
+  /// Non-null for non-language decks (e.g. "Math") — switches the tutor
+  /// persona and the header label.
+  final String? subject;
   final String Function()? currentContextBuilder;
   final ChatPosition position;
   final ValueChanged<ChatPosition> onPositionChanged;
@@ -35,6 +39,7 @@ class ChatBox extends StatefulWidget {
     super.key,
     required this.targetLanguage,
     required this.nativeLanguage,
+    this.subject,
     this.currentContextBuilder,
     required this.position,
     required this.onPositionChanged,
@@ -97,6 +102,7 @@ class _ChatBoxState extends State<ChatBox> {
         history: _messages,
         targetLanguage: widget.targetLanguage,
         nativeLanguage: widget.nativeLanguage,
+        subject: widget.subject,
         currentContext: widget.currentContextBuilder?.call(),
       );
       await for (final delta in stream) {
@@ -202,7 +208,7 @@ class _ChatBoxState extends State<ChatBox> {
                 const SizedBox(width: 8),
                 Flexible(
                   child: Text(
-                    'Ask about ${widget.targetLanguage}',
+                    'Ask about ${widget.subject ?? widget.targetLanguage}',
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       color: SprakTheme.neon,
@@ -275,8 +281,8 @@ class _ChatBoxState extends State<ChatBox> {
                     controller: _controller,
                     enabled: !_sending,
                     decoration: InputDecoration(
-                      hintText:
-                          'Ask a question about ${widget.targetLanguage}…',
+                      hintText: 'Ask a question about '
+                          '${widget.subject ?? widget.targetLanguage}…',
                       isDense: true,
                     ),
                     onSubmitted: (_) => _send(),

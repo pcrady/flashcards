@@ -167,7 +167,7 @@ class AuroraWordmark extends StatelessWidget {
     return ShaderMask(
       shaderCallback: (bounds) => SprakTheme.aurora.createShader(bounds),
       blendMode: BlendMode.srcIn,
-      child: Text('språk',
+      child: Text('Språk',
           style: SprakTheme.wordmark(size: size, color: Colors.white)),
     );
   }

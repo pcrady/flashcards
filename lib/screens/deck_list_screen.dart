@@ -312,6 +312,7 @@ class DeckListScreen extends StatelessWidget {
 
   Future<void> _createDeck(BuildContext context) async {
     final nameController = TextEditingController();
+    var kind = DeckKind.language;
     String native = 'English';
     String target = 'Russian';
 
@@ -334,28 +335,42 @@ class DeckListScreen extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 16),
-                DropdownButtonFormField<String>(
-                  initialValue: native,
-                  decoration: const InputDecoration(labelText: 'I speak'),
-                  items: [
-                    for (final l in kLanguages)
-                      DropdownMenuItem(
-                          value: l.name, child: Text('${l.flag}  ${l.name}')),
+                SegmentedButton<DeckKind>(
+                  segments: [
+                    for (final k in DeckKind.values)
+                      ButtonSegment(value: k, label: Text(k.label)),
                   ],
-                  onChanged: (v) => setState(() => native = v!),
+                  selected: {kind},
+                  onSelectionChanged: (s) =>
+                      setState(() => kind = s.first),
                 ),
-                const SizedBox(height: 12),
-                DropdownButtonFormField<String>(
-                  initialValue: target,
-                  decoration:
-                      const InputDecoration(labelText: 'I am learning'),
-                  items: [
-                    for (final l in kLanguages)
-                      DropdownMenuItem(
-                          value: l.name, child: Text('${l.flag}  ${l.name}')),
-                  ],
-                  onChanged: (v) => setState(() => target = v!),
-                ),
+                if (kind == DeckKind.language) ...[
+                  const SizedBox(height: 16),
+                  DropdownButtonFormField<String>(
+                    initialValue: native,
+                    decoration: const InputDecoration(labelText: 'I speak'),
+                    items: [
+                      for (final l in kLanguages)
+                        DropdownMenuItem(
+                            value: l.name,
+                            child: Text('${l.flag}  ${l.name}')),
+                    ],
+                    onChanged: (v) => setState(() => native = v!),
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    initialValue: target,
+                    decoration:
+                        const InputDecoration(labelText: 'I am learning'),
+                    items: [
+                      for (final l in kLanguages)
+                        DropdownMenuItem(
+                            value: l.name,
+                            child: Text('${l.flag}  ${l.name}')),
+                    ],
+                    onChanged: (v) => setState(() => target = v!),
+                  ),
+                ],
               ],
             ),
           ),
@@ -373,10 +388,14 @@ class DeckListScreen extends StatelessWidget {
 
     if (created == true) {
       final name = nameController.text.trim();
+      final isLanguage = kind == DeckKind.language;
       await store.addDeck(Deck(
-        name: name.isEmpty ? '$target basics' : name,
-        nativeLanguage: native,
-        targetLanguage: target,
+        name: name.isEmpty
+            ? '${isLanguage ? target : kind.label} basics'
+            : name,
+        kind: kind,
+        nativeLanguage: isLanguage ? native : 'English',
+        targetLanguage: isLanguage ? target : kind.label,
         folderId: folder?.id,
       ));
     }
@@ -515,8 +534,7 @@ class _DeckCard extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  Text(flagFor(deck.targetLanguage),
-                      style: const TextStyle(fontSize: 30)),
+                  Text(deck.emblem, style: const TextStyle(fontSize: 30)),
                   const Spacer(),
                   IconButton(
                     icon: const Icon(Icons.drive_file_move_outlined,
@@ -560,7 +578,9 @@ class _DeckCard extends StatelessWidget {
               ),
               const SizedBox(height: 4),
               Text(
-                '${deck.nativeLanguage} → ${deck.targetLanguage}',
+                deck.isLanguage
+                    ? '${deck.nativeLanguage} → ${deck.targetLanguage}'
+                    : deck.kind.label,
                 style: TextStyle(color: SprakTheme.inkSoft, fontSize: 13),
               ),
               const SizedBox(height: 10),

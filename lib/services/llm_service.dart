@@ -55,17 +55,41 @@ class LlmService {
     return providerById(prefs.getString(providerPref) ?? 'anthropic');
   }
 
-  /// Streams a chat turn for the language-tutor conversation box as text
-  /// deltas, so the reply can be rendered as it is generated.
+  /// Completes the other side of a math/general flashcard: given the
+  /// question, produce the answer, or vice versa.
+  static Future<String> completeCard({
+    required String text,
+    required bool fromQuestion,
+    required String subject,
+  }) {
+    final from = fromQuestion ? 'question' : 'answer';
+    final to = fromQuestion ? 'answer' : 'question';
+    return _complete(
+      system: 'You complete flashcards for studying '
+          '${subject.toLowerCase()}. The user sends the $from side of a '
+          'card; respond with ONLY the text of the $to side — short, no '
+          'explanations, and no unnecessary punctuation such as a trailing '
+          'period or surrounding quotes. Inline LaTeX between \$ signs is '
+          'rendered, so use it for mathematical notation.',
+      history: [ChatMessage('user', text)],
+      maxTokens: 512,
+    );
+  }
+
+  /// Streams a chat turn for the tutor conversation box as text deltas,
+  /// so the reply can be rendered as it is generated. [subject] switches
+  /// the tutor persona for non-language decks (e.g. "Math").
   static Stream<String> chatStream({
     required List<ChatMessage> history,
     required String targetLanguage,
     required String nativeLanguage,
+    String? subject,
     String? currentContext,
   }) async* {
     final system = _tutorSystemPrompt(
       targetLanguage: targetLanguage,
       nativeLanguage: nativeLanguage,
+      subject: subject,
       currentContext: currentContext,
     );
     final prefs = await SharedPreferences.getInstance();
@@ -324,7 +348,8 @@ exactly this shape:
   a phrase where a single lemma does not apply, use null.
 - "translation": the $to translation of the base form when there is one,
   otherwise of the input as given. Only the translation — no explanations,
-  no quotes, no transliteration.''';
+  no quotes, no transliteration, and no unnecessary punctuation such as a
+  trailing period.''';
 
     final reply = await _complete(
       system: system,
@@ -414,11 +439,23 @@ exactly this shape:
     required String instruction,
     required String targetLanguage,
     required String nativeLanguage,
+    String? subject,
     required List<Map<String, String>> existingCards,
   }) async {
-    final system = '''
+    final intro = subject != null
+        ? '''
+You edit a flashcard deck for studying ${subject.toLowerCase()}. Each card
+has a "target" side (the question) and a "native" side (the answer). Inline
+LaTeX between \$ signs is rendered, so use it for mathematical notation.'''
+        : '''
 You edit a flashcard deck for a language-learning app. The learner speaks
-$nativeLanguage and is learning $targetLanguage.
+$nativeLanguage and is learning $targetLanguage.''';
+    final sides = subject != null
+        ? '"native" is the answer side, "target" is the question side.'
+        : '"native" is the $nativeLanguage side, "target" is the '
+            '$targetLanguage side.';
+    final system = '''
+$intro
 
 The deck currently contains these cards (JSON):
 ${jsonEncode(existingCards)}
@@ -427,8 +464,11 @@ The user gives an instruction describing changes to make. Respond with ONLY a
 JSON object — no markdown fences, no commentary — in exactly this shape:
 {"add": [{"native": "...", "target": "..."}], "remove": ["...", "..."]}
 
-- "add": new cards to create. "native" is the $nativeLanguage side, "target"
-  is the $targetLanguage side. Do not duplicate cards already in the deck.
+- "add": new cards to create. $sides Do not duplicate cards already in the
+  deck. Do not add unnecessary punctuation to card text — no trailing
+  periods, no surrounding quotation marks; only punctuation that is
+  genuinely part of the word or phrase (e.g. a question mark on an actual
+  question).
 - "remove": the exact "target" text of existing cards that should be deleted.
 Use an empty array for whichever does not apply.''';
 
@@ -569,19 +609,34 @@ Use an empty array for whichever does not apply.''';
   static String _tutorSystemPrompt({
     required String targetLanguage,
     required String nativeLanguage,
+    String? subject,
     String? currentContext,
   }) {
-    final system = StringBuffer()
-      ..writeln('You are a friendly, expert $targetLanguage language tutor '
-          'inside a flashcard app called språk. The learner speaks '
-          '$nativeLanguage and is learning $targetLanguage.')
-      ..writeln('Answer questions about vocabulary, grammar, pronunciation, '
-          'and usage. Keep answers short and practical, and include '
-          '$targetLanguage examples with $nativeLanguage glosses where '
-          'helpful.')
-      ..writeln('Plain text only — no markdown. Inline LaTeX between \$ '
-          'signs is rendered, so you may use it where real notation helps '
-          '(e.g. IPA or stress marks); never use it for ordinary text.');
+    final system = StringBuffer();
+    if (subject != null) {
+      system
+        ..writeln('You are a friendly, expert '
+            '${subject.toLowerCase()} tutor inside a flashcard app called '
+            'språk. The learner is studying flashcards on this subject.')
+        ..writeln('Answer questions about the material. Keep answers '
+            'short, practical, and step-by-step where that helps.')
+        ..writeln('Plain text only — no markdown. Inline LaTeX between \$ '
+            'signs is rendered, so use it for mathematical or technical '
+            'notation; never use it for ordinary text.');
+    } else {
+      system
+        ..writeln('You are a friendly, expert $targetLanguage language '
+            'tutor inside a flashcard app called språk. The learner speaks '
+            '$nativeLanguage and is learning $targetLanguage.')
+        ..writeln('Answer questions about vocabulary, grammar, '
+            'pronunciation, and usage. Keep answers short and practical, '
+            'and include $targetLanguage examples with $nativeLanguage '
+            'glosses where helpful.')
+        ..writeln('Plain text only — no markdown. Inline LaTeX between \$ '
+            'signs is rendered, so you may use it where real notation '
+            'helps (e.g. IPA or stress marks); never use it for ordinary '
+            'text.');
+    }
     if (currentContext != null && currentContext.isNotEmpty) {
       system.writeln('The learner is currently studying: $currentContext');
     }

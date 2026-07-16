@@ -174,9 +174,11 @@ class _QuizScreenState extends State<QuizScreen> {
     (_isChoice ? _choiceFocus : _answerFocus).requestFocus();
   }
 
-  /// The correct answer plus up to three distractors pulled from the rest
-  /// of the deck (same language side), shuffled.
+  /// The correct answer plus distractors pulled from the rest of the deck
+  /// (same side), shuffled. Language decks show 4 options; math/general
+  /// decks show 8.
   List<String> _buildChoices() {
+    final optionCount = deck.isLanguage ? 4 : 8;
     final correct = expected;
     final seen = {_normalize(correct)};
     final pool = <String>[];
@@ -185,13 +187,14 @@ class _QuizScreenState extends State<QuizScreen> {
       if (seen.add(_normalize(option))) pool.add(option);
     }
     pool.shuffle(_random);
-    return [correct, ...pool.take(3)]..shuffle(_random);
+    return [correct, ...pool.take(optionCount - 1)]..shuffle(_random);
   }
 
   /// Switches the OS keyboard to the language the answer should be typed
   /// in. Fire-and-forget: when no matching layout is installed nothing
   /// changes, and the indicator keeps showing the real layout.
   void _syncKeyboard() {
+    if (!deck.isLanguage) return;
     if (_remaining.isEmpty) return;
     final language = _askInTarget ? deck.nativeLanguage : deck.targetLanguage;
     KeyboardLayoutService.selectForLanguage(
@@ -350,7 +353,9 @@ class _QuizScreenState extends State<QuizScreen> {
     });
     widget.store.save();
     // Always let the learner hear the target-language side.
-    TtsService().speak(card.target, ttsLocaleFor(deck.targetLanguage));
+    if (deck.isLanguage) {
+      TtsService().speak(card.target, ttsLocaleFor(deck.targetLanguage));
+    }
   }
 
   /// "I was right" override: e.g. the answer was "I'm getting ready" and
@@ -453,8 +458,7 @@ class _QuizScreenState extends State<QuizScreen> {
       appBar: AppBar(
         title: Row(
           children: [
-            Text(flagFor(deck.targetLanguage),
-                style: const TextStyle(fontSize: 22)),
+            Text(deck.emblem, style: const TextStyle(fontSize: 22)),
             const SizedBox(width: 10),
             Text(deck.name),
             const SizedBox(width: 14),
@@ -499,12 +503,14 @@ class _QuizScreenState extends State<QuizScreen> {
   /// Quiz workspace plus the tutor chat, docked left, right, or at the
   /// bottom, separated by a resize handle.
   Widget _buildBody(BuildContext context) {
+    // Scrollable so tall content (8-option grids, long answers) never
+    // overflows when the window or quiz pane is short.
     final quizArea = Expanded(
       child: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 560),
-          child: Padding(
-            padding: const EdgeInsets.all(24),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 560),
             child: switch (_phase) {
               _Phase.deckCleared => _buildDeckCleared(),
               _Phase.groupCleared => _buildGroupCleared(),
@@ -519,6 +525,7 @@ class _QuizScreenState extends State<QuizScreen> {
       onPositionChanged: _setChatPosition,
       targetLanguage: deck.targetLanguage,
       nativeLanguage: deck.nativeLanguage,
+      subject: deck.isLanguage ? null : deck.kind.label,
       currentContextBuilder: () =>
           (_phase == _Phase.groupCleared || _phase == _Phase.deckCleared)
               ? 'reviewing completed cards'
@@ -661,9 +668,13 @@ class _QuizScreenState extends State<QuizScreen> {
         _buildGroupDots(),
         const SizedBox(height: 20),
         Text(
-          _askInTarget
-              ? 'What does this mean in ${deck.nativeLanguage}?'
-              : 'How do you say this in ${deck.targetLanguage}?',
+          deck.isLanguage
+              ? (_askInTarget
+                  ? 'What does this mean in ${deck.nativeLanguage}?'
+                  : 'How do you say this in ${deck.targetLanguage}?')
+              : (_askInTarget
+                  ? 'What is the answer?'
+                  : 'What question has this answer?'),
           textAlign: TextAlign.center,
           style: TextStyle(
             color: SprakTheme.inkSoft,
@@ -682,7 +693,7 @@ class _QuizScreenState extends State<QuizScreen> {
                 style: SprakTheme.vocab(size: 44),
               ),
             ),
-            if (_askInTarget) ...[
+            if (_askInTarget && deck.isLanguage) ...[
               const SizedBox(width: 12),
               IconButton(
                 icon: const Icon(Icons.volume_up_outlined, size: 30),
@@ -706,8 +717,7 @@ class _QuizScreenState extends State<QuizScreen> {
             textAlign: TextAlign.center,
             style: const TextStyle(fontSize: 22),
             decoration: InputDecoration(
-              hintText:
-                  _askInTarget ? deck.nativeLanguage : deck.targetLanguage,
+              hintText: _askInTarget ? deck.nativeLabel : deck.targetLabel,
               contentPadding:
                   const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
             ),
@@ -716,9 +726,10 @@ class _QuizScreenState extends State<QuizScreen> {
             onEditingComplete: () {},
             onSubmitted: (_) => _phase == _Phase.asking ? _check() : _next(),
           ),
-          StreamBuilder<String?>(
-            stream: _keyboardLayout,
-            builder: (context, snapshot) {
+          if (deck.isLanguage)
+            StreamBuilder<String?>(
+              stream: _keyboardLayout,
+              builder: (context, snapshot) {
               final layout = snapshot.data;
               if (layout == null) return const SizedBox.shrink();
               return Padding(
@@ -836,6 +847,10 @@ class _QuizScreenState extends State<QuizScreen> {
       LogicalKeyboardKey.digit2,
       LogicalKeyboardKey.digit3,
       LogicalKeyboardKey.digit4,
+      LogicalKeyboardKey.digit5,
+      LogicalKeyboardKey.digit6,
+      LogicalKeyboardKey.digit7,
+      LogicalKeyboardKey.digit8,
     ];
     return CallbackShortcuts(
       bindings: {
@@ -850,10 +865,7 @@ class _QuizScreenState extends State<QuizScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            for (var i = 0; i < _choices.length; i++) ...[
-              if (i > 0) const SizedBox(height: 8),
-              _buildChoiceTile(context, i),
-            ],
+            _buildChoiceGrid(context),
             if (_phase == _Phase.asking)
               Padding(
                 padding: const EdgeInsets.only(top: 10),
@@ -866,6 +878,43 @@ class _QuizScreenState extends State<QuizScreen> {
           ],
         ),
       ),
+    );
+  }
+
+  /// Up to 4 options stack vertically; more (math/general decks show 8)
+  /// go into two columns so they all fit on screen. Numbering reads
+  /// left-to-right, matching the 1–8 shortcuts.
+  Widget _buildChoiceGrid(BuildContext context) {
+    if (_choices.length <= 4) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (var i = 0; i < _choices.length; i++) ...[
+            if (i > 0) const SizedBox(height: 8),
+            _buildChoiceTile(context, i),
+          ],
+        ],
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        for (var row = 0; row * 2 < _choices.length; row++) ...[
+          if (row > 0) const SizedBox(height: 8),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(child: _buildChoiceTile(context, row * 2)),
+              const SizedBox(width: 8),
+              Expanded(
+                child: row * 2 + 1 < _choices.length
+                    ? _buildChoiceTile(context, row * 2 + 1)
+                    : const SizedBox.shrink(),
+              ),
+            ],
+          ),
+        ],
+      ],
     );
   }
 

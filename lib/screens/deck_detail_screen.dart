@@ -153,15 +153,29 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
       _translateError = null;
     });
     try {
-      final result = await LlmService.suggestCard(
-        text: text,
-        from: fromNative ? deck.nativeLanguage : deck.targetLanguage,
-        to: fromNative ? deck.targetLanguage : deck.nativeLanguage,
-      );
+      final String? baseForm;
+      final String suggestion;
+      if (deck.isLanguage) {
+        final result = await LlmService.suggestCard(
+          text: text,
+          from: fromNative ? deck.nativeLanguage : deck.targetLanguage,
+          to: fromNative ? deck.targetLanguage : deck.nativeLanguage,
+        );
+        baseForm = result.baseForm;
+        suggestion = result.translation;
+      } else {
+        // Native side holds the answer, target side the question.
+        baseForm = null;
+        suggestion = await LlmService.completeCard(
+          text: text,
+          fromQuestion: !fromNative,
+          subject: deck.kind.label,
+        );
+      }
       if (!mounted || seq != _requestSeq) return;
       setState(() {
-        _baseFormSuggestion = result.baseForm;
-        _translationSuggestion = result.translation;
+        _baseFormSuggestion = baseForm;
+        _translationSuggestion = suggestion;
         _suggestionForTarget = fromNative;
       });
     } on LlmException catch (e) {
@@ -262,8 +276,8 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
     final result = await showEditCardDialog(
       context,
       card: card,
-      nativeLanguage: deck.nativeLanguage,
-      targetLanguage: deck.targetLanguage,
+      nativeLanguage: deck.nativeLabel,
+      targetLanguage: deck.targetLabel,
     );
     if (result == null) return;
     card.native = result.native;
@@ -347,7 +361,7 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
         child: _SuggestionBox(
           label: typedHere
               ? 'Dictionary form'
-              : (isNative ? deck.nativeLanguage : deck.targetLanguage),
+              : (isNative ? deck.nativeLabel : deck.targetLabel),
           value: suggestion,
           icon: typedHere
               ? Icons.menu_book_outlined
@@ -402,8 +416,7 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(flagFor(deck.targetLanguage),
-                    style: const TextStyle(fontSize: 22)),
+                Text(deck.emblem, style: const TextStyle(fontSize: 22)),
                 const SizedBox(width: 10),
                 Flexible(
                   child: Text(deck.name, overflow: TextOverflow.ellipsis),
@@ -454,11 +467,16 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                             style: Theme.of(context).textTheme.titleLarge),
                         const SizedBox(height: 4),
                         Text(
-                          'Type in either language and press Enter to '
-                          'translate. If you typed an inflected form, the '
-                          'dictionary form is suggested under your field. '
-                          'Enter accepts the suggestions, and once more '
-                          'adds the card.',
+                          deck.isLanguage
+                              ? 'Type in either language and press Enter to '
+                                  'translate. If you typed an inflected '
+                                  'form, the dictionary form is suggested '
+                                  'under your field. Enter accepts the '
+                                  'suggestions, and once more adds the card.'
+                              : 'Type either side and press Enter to have '
+                                  'AI fill in the other. Use \$…\$ for '
+                                  'LaTeX. Enter accepts the suggestion, and '
+                                  'once more adds the card.',
                           style: TextStyle(
                               color: SprakTheme.inkSoft, fontSize: 13),
                         ),
@@ -475,7 +493,7 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                                     controller: _nativeController,
                                     focusNode: _nativeFocus,
                                     decoration: InputDecoration(
-                                      labelText: deck.nativeLanguage,
+                                      labelText: deck.nativeLabel,
                                     ),
                                     // Keep focus on submit — the default
                                     // behavior unfocuses the field, which
@@ -510,7 +528,7 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                                     controller: _targetController,
                                     focusNode: _targetFocus,
                                     decoration: InputDecoration(
-                                      labelText: deck.targetLanguage,
+                                      labelText: deck.targetLabel,
                                     ),
                                     onEditingComplete: () {},
                                     onSubmitted: (_) =>
@@ -632,14 +650,18 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                             child: ListTile(
                               contentPadding: const EdgeInsets.symmetric(
                                   horizontal: 12, vertical: 4),
-                              leading: IconButton(
-                                icon: const Icon(Icons.volume_up_outlined),
-                                color: SprakTheme.fjord,
-                                tooltip: 'Play audio',
-                                onPressed: () => TtsService().speak(
-                                    card.target,
-                                    ttsLocaleFor(deck.targetLanguage)),
-                              ),
+                              leading: deck.isLanguage
+                                  ? IconButton(
+                                      icon: const Icon(
+                                          Icons.volume_up_outlined),
+                                      color: SprakTheme.fjord,
+                                      tooltip: 'Play audio',
+                                      onPressed: () => TtsService().speak(
+                                          card.target,
+                                          ttsLocaleFor(
+                                              deck.targetLanguage)),
+                                    )
+                                  : null,
                               title: TexText(card.target,
                                   style: SprakTheme.vocab(size: 20)),
                               subtitle: Padding(

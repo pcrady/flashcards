@@ -77,7 +77,8 @@ Future<void> startLearning(
               _ModeTile(
                 icon: Icons.checklist,
                 title: 'Multiple choice',
-                subtitle: 'Pick the right answer out of four options.',
+                subtitle: 'Pick the right answer out of '
+                    '${deck.isLanguage ? "four" : "eight"} options.',
                 onTap: () =>
                     Navigator.pop(context, QuizStyle.multipleChoice),
               ),

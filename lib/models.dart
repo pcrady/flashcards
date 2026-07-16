@@ -228,6 +228,23 @@ class Folder {
       );
 }
 
+/// What a deck teaches. Language decks translate between two languages;
+/// math and general decks pair a question with an answer.
+enum DeckKind {
+  language('language', 'Language'),
+  math('math', 'Math'),
+  general('general', 'General');
+
+  final String id;
+  final String label;
+  const DeckKind(this.id, this.label);
+
+  static DeckKind fromId(String? id) => DeckKind.values.firstWhere(
+        (k) => k.id == id,
+        orElse: () => DeckKind.language,
+      );
+}
+
 class Deck {
   final String id;
   String name;
@@ -235,12 +252,31 @@ class Deck {
   /// ID of the folder this deck lives in, or null for the home screen.
   String? folderId;
 
-  /// The language being learned (e.g. Russian).
+  DeckKind kind;
+
+  /// The language being learned (e.g. Russian). Unused for non-language
+  /// decks, where the "target" side of a card is the question.
   String targetLanguage;
 
-  /// The language the user already speaks (e.g. English).
+  /// The language the user already speaks (e.g. English). Unused for
+  /// non-language decks, where the "native" side is the answer.
   String nativeLanguage;
   final List<CardItem> cards;
+
+  bool get isLanguage => kind == DeckKind.language;
+
+  /// Label for a card's target side ("Russian" / "Question").
+  String get targetLabel => isLanguage ? targetLanguage : 'Question';
+
+  /// Label for a card's native side ("English" / "Answer").
+  String get nativeLabel => isLanguage ? nativeLanguage : 'Answer';
+
+  /// Emoji shown on deck tiles and title bars.
+  String get emblem => switch (kind) {
+        DeckKind.language => flagFor(targetLanguage),
+        DeckKind.math => '📐',
+        DeckKind.general => '💡',
+      };
 
   /// In-progress study session, if the learner left mid-deck.
   QuizSession? session;
@@ -279,6 +315,7 @@ class Deck {
     required this.name,
     required this.targetLanguage,
     required this.nativeLanguage,
+    this.kind = DeckKind.language,
     List<CardItem>? cards,
     this.session,
     this.folderId,
@@ -288,6 +325,7 @@ class Deck {
   Map<String, dynamic> toJson() => {
         'id': id,
         'name': name,
+        'kind': kind.id,
         'targetLanguage': targetLanguage,
         'nativeLanguage': nativeLanguage,
         'cards': cards.map((c) => c.toJson()).toList(),
@@ -298,6 +336,7 @@ class Deck {
   factory Deck.fromJson(Map<String, dynamic> json) => Deck(
         id: json['id'] as String?,
         name: json['name'] as String? ?? 'Untitled',
+        kind: DeckKind.fromId(json['kind'] as String?),
         targetLanguage: json['targetLanguage'] as String? ?? 'Russian',
         nativeLanguage: json['nativeLanguage'] as String? ?? 'English',
         cards: (json['cards'] as List<dynamic>? ?? [])

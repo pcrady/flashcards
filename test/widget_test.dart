@@ -4,6 +4,6 @@ import 'package:sprak/main.dart';
 void main() {
   testWidgets('App renders the deck list', (WidgetTester tester) async {
     await tester.pumpWidget(const SprakApp());
-    expect(find.text('språk'), findsOneWidget);
+    expect(find.text('Språk'), findsOneWidget);
   });
 }

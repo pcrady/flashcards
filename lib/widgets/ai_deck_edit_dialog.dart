@@ -4,6 +4,7 @@ import '../models.dart';
 import '../services/claude_service.dart';
 import '../services/llm_service.dart';
 import '../theme.dart';
+import 'tex_text.dart';
 
 /// Dialog flow for editing a deck with an LLM: the user types an
 /// instruction, the model proposes additions/removals, and the user
@@ -44,6 +45,8 @@ class _AiDeckEditDialogState extends State<AiDeckEditDialog> {
         instruction: instruction,
         targetLanguage: widget.deck.targetLanguage,
         nativeLanguage: widget.deck.nativeLanguage,
+        subject:
+            widget.deck.isLanguage ? null : widget.deck.kind.label,
         existingCards: [
           for (final c in widget.deck.cards)
             {'native': c.native, 'target': c.target},
@@ -151,12 +154,25 @@ class _AiDeckEditDialogState extends State<AiDeckEditDialog> {
           spacing: 8,
           runSpacing: 8,
           children: [
-            for (final example in [
-              'Numbers 1–10',
-              'Days of the week',
-              'Common greetings',
-              'Remove the hardest cards',
-            ])
+            for (final example in switch (widget.deck.kind) {
+              DeckKind.language => const [
+                  'Numbers 1–10',
+                  'Days of the week',
+                  'Common greetings',
+                  'Remove the hardest cards',
+                ],
+              DeckKind.math => const [
+                  'Derivative rules',
+                  'Squares up to 15²',
+                  'Basic trig identities',
+                  'Remove the hardest cards',
+                ],
+              DeckKind.general => const [
+                  'World capitals',
+                  'Planets of the solar system',
+                  'Remove the hardest cards',
+                ],
+            })
               ActionChip(
                 label: Text(example, style: const TextStyle(fontSize: 12)),
                 onPressed: () {
@@ -200,9 +216,9 @@ class _AiDeckEditDialogState extends State<AiDeckEditDialog> {
                   value: _addSelected[i],
                   onChanged: (v) =>
                       setState(() => _addSelected[i] = v ?? false),
-                  title: Text(plan.additions[i].target,
+                  title: TexText(plan.additions[i].target,
                       style: SprakTheme.vocab(size: 16)),
-                  subtitle: Text(plan.additions[i].native,
+                  subtitle: TexText(plan.additions[i].native,
                       style: TextStyle(
                           color: SprakTheme.inkSoft, fontSize: 12)),
                 ),
@@ -222,7 +238,7 @@ class _AiDeckEditDialogState extends State<AiDeckEditDialog> {
                   value: _removeSelected[i],
                   onChanged: (v) =>
                       setState(() => _removeSelected[i] = v ?? false),
-                  title: Text(
+                  title: TexText(
                     plan.removals[i],
                     style: const TextStyle(
                       decoration: TextDecoration.lineThrough,
