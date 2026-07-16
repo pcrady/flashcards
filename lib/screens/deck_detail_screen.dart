@@ -74,7 +74,12 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
   /// Enter in a text field: accept a pending suggestion; otherwise
   /// translate when the other side is still empty; otherwise add the card.
   void _onSubmit({required bool fromNative}) {
-    if (_translating) return;
+    if (_translating) {
+      // Ignore the Enter but make sure the field keeps focus so the next
+      // press still lands here.
+      (fromNative ? _nativeFocus : _targetFocus).requestFocus();
+      return;
+    }
     if (_suggestion != null) {
       _acceptSuggestion();
       return;
@@ -314,6 +319,10 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                                 decoration: InputDecoration(
                                   labelText: deck.nativeLanguage,
                                 ),
+                                // Keep focus on submit — the default
+                                // behavior unfocuses the field, which
+                                // swallows rapid Enter presses.
+                                onEditingComplete: () {},
                                 onSubmitted: (_) =>
                                     _onSubmit(fromNative: true),
                               ),
@@ -338,6 +347,7 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                                 decoration: InputDecoration(
                                   labelText: deck.targetLanguage,
                                 ),
+                                onEditingComplete: () {},
                                 onSubmitted: (_) =>
                                     _onSubmit(fromNative: false),
                               ),

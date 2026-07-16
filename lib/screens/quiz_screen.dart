@@ -447,6 +447,9 @@ class _QuizScreenState extends State<QuizScreen> {
             contentPadding:
                 const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
           ),
+          // Keep focus on submit — the default behavior unfocuses the
+          // field, which swallows rapid Enter presses.
+          onEditingComplete: () {},
           onSubmitted: (_) => _phase == _Phase.asking ? _check() : _next(),
         ),
         const SizedBox(height: 20),
