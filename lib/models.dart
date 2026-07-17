@@ -159,6 +159,26 @@ enum QuizStyle {
       );
 }
 
+/// Which side of a card is shown as the prompt during a quiz.
+enum QuizDirection {
+  /// Show the target/front side; answer with the native/back side.
+  front('front'),
+
+  /// Show the native/back side; answer with the target/front side.
+  back('back'),
+
+  /// Ask each card in both directions.
+  both('both');
+
+  final String id;
+  const QuizDirection(this.id);
+
+  static QuizDirection fromId(String? id) => QuizDirection.values.firstWhere(
+        (d) => d.id == id,
+        orElse: () => QuizDirection.both,
+      );
+}
+
 /// How typed answers are evaluated during a quiz.
 enum GradingMode {
   /// Character-for-character comparison (after the usual normalization).
@@ -203,6 +223,7 @@ class QuizSession {
   final List<QuizTaskRef> remaining;
   final QuizStyle style;
   final GradingMode grading;
+  final QuizDirection direction;
 
   QuizSession({
     required this.groups,
@@ -210,6 +231,7 @@ class QuizSession {
     required this.remaining,
     this.style = QuizStyle.typing,
     this.grading = GradingMode.exact,
+    this.direction = QuizDirection.both,
   });
 
   Map<String, dynamic> toJson() => {
@@ -218,6 +240,7 @@ class QuizSession {
         'remaining': remaining.map((t) => t.toJson()).toList(),
         'style': style.id,
         'grading': grading.id,
+        'direction': direction.id,
       };
 
   factory QuizSession.fromJson(Map<String, dynamic> json) => QuizSession(
@@ -232,6 +255,7 @@ class QuizSession {
         ],
         style: QuizStyle.fromId(json['style'] as String?),
         grading: GradingMode.fromId(json['grading'] as String?),
+        direction: QuizDirection.fromId(json['direction'] as String?),
       );
 }
 
@@ -286,11 +310,11 @@ class Deck {
 
   bool get isLanguage => kind == DeckKind.language;
 
-  /// Label for a card's target side ("Russian" / "Question").
-  String get targetLabel => isLanguage ? targetLanguage : 'Question';
+  /// Label for a card's target side ("Russian" / "Front").
+  String get targetLabel => isLanguage ? targetLanguage : 'Front';
 
-  /// Label for a card's native side ("English" / "Answer").
-  String get nativeLabel => isLanguage ? nativeLanguage : 'Answer';
+  /// Label for a card's native side ("English" / "Back").
+  String get nativeLabel => isLanguage ? nativeLanguage : 'Back';
 
   /// Emoji shown on deck tiles and title bars.
   String get emblem => switch (kind) {
@@ -321,6 +345,34 @@ class Deck {
       }
     }
     return seen == 0 ? null : correct / seen;
+  }
+
+  // NUL-separated so the two sides can't bleed into each other
+  // (e.g. "a b"/"c" vs "a"/"b c").
+  static String _dupKey(CardItem c) =>
+      '${c.native.trim().toLowerCase()}\u0000${c.target.trim().toLowerCase()}';
+
+  /// Cards that appear more than once — same native and target text after
+  /// trimming and lowercasing. Each inner list is one set of duplicates,
+  /// in deck order.
+  List<List<CardItem>> findDuplicateCards() {
+    final groups = <String, List<CardItem>>{};
+    for (final c in cards) {
+      groups.putIfAbsent(_dupKey(c), () => []).add(c);
+    }
+    return [
+      for (final g in groups.values)
+        if (g.length > 1) g,
+    ];
+  }
+
+  /// Whether the deck already holds a card with this native/target pair,
+  /// ignoring case and surrounding whitespace. [excluding] skips one card
+  /// (e.g. the card currently being edited).
+  bool containsCard(String native, String target, {CardItem? excluding}) {
+    final key = '${native.trim().toLowerCase()}'
+        '\u0000${target.trim().toLowerCase()}';
+    return cards.any((c) => c != excluding && _dupKey(c) == key);
   }
 
   Map<Mastery, int> get masteryCounts {

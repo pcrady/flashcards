@@ -12,6 +12,7 @@ import '../services/tts_service.dart';
 import '../storage.dart';
 import '../theme.dart';
 import '../widgets/chat_box.dart';
+import '../widgets/edit_card_dialog.dart';
 import '../widgets/tex_text.dart';
 
 enum _Phase { asking, answered, groupCleared, deckCleared }
@@ -45,6 +46,7 @@ class QuizScreen extends StatefulWidget {
   final QuizMode mode;
   final QuizStyle style;
   final GradingMode grading;
+  final QuizDirection direction;
   const QuizScreen({
     super.key,
     required this.store,
@@ -52,6 +54,7 @@ class QuizScreen extends StatefulWidget {
     this.mode = QuizMode.whole,
     this.style = QuizStyle.typing,
     this.grading = GradingMode.exact,
+    this.direction = QuizDirection.both,
   });
 
   @override
@@ -106,6 +109,7 @@ class _QuizScreenState extends State<QuizScreen> {
 
   late QuizStyle _style;
   late GradingMode _gradingMode;
+  late QuizDirection _direction;
 
   /// True while an AI grade is in flight; the answer field is frozen and
   /// re-checks are ignored.
@@ -127,9 +131,12 @@ class _QuizScreenState extends State<QuizScreen> {
   String get prompt => _askInTarget ? card.target : card.native;
   String get expected => _askInTarget ? card.native : card.target;
 
-  /// Tasks each card must clear: multiple choice and/or typing in both
-  /// directions.
-  int get _tasksPerCard => _style == QuizStyle.both ? 3 : 2;
+  /// Tasks each card must clear: multiple choice and/or typing, in one or
+  /// both directions. Style "both" adds one choice task on top of typing.
+  int get _tasksPerCard {
+    final directions = _direction == QuizDirection.both ? 2 : 1;
+    return _style == QuizStyle.both ? directions + 1 : directions;
+  }
 
   @override
   void initState() {
@@ -146,6 +153,7 @@ class _QuizScreenState extends State<QuizScreen> {
     });
     _style = widget.style;
     _gradingMode = widget.grading;
+    _direction = widget.direction;
     final session = deck.session;
     if (widget.mode != QuizMode.resume ||
         session == null ||
@@ -287,6 +295,7 @@ class _QuizScreenState extends State<QuizScreen> {
     _remaining = remaining;
     _style = session.style;
     _gradingMode = session.grading;
+    _direction = session.direction;
     return true;
   }
 
@@ -306,21 +315,28 @@ class _QuizScreenState extends State<QuizScreen> {
             ],
             style: _style,
             grading: _gradingMode,
+            direction: _direction,
           );
   }
 
   void _startGroup() {
+    // Which sides get asked: askInTarget=true shows the target/front side.
+    final askFront = _direction != QuizDirection.back;
+    final askBack = _direction != QuizDirection.front;
     _remaining = [
       for (final c in _group) ...[
         // Multiple choice: recognize the target-language word. In pure
-        // multiple-choice style both directions are asked this way.
-        if (_style != QuizStyle.typing)
+        // multiple-choice style both directions are asked this way; in
+        // style "both" the single choice task follows the chosen side.
+        if (_style != QuizStyle.typing && askFront)
           (card: c, askInTarget: true, isChoice: true),
-        if (_style == QuizStyle.multipleChoice)
+        if ((_style == QuizStyle.multipleChoice ||
+                (_style == QuizStyle.both && !askFront)) &&
+            askBack)
           (card: c, askInTarget: false, isChoice: true),
         if (_style != QuizStyle.multipleChoice) ...[
-          (card: c, askInTarget: true, isChoice: false),
-          (card: c, askInTarget: false, isChoice: false),
+          if (askFront) (card: c, askInTarget: true, isChoice: false),
+          if (askBack) (card: c, askInTarget: false, isChoice: false),
         ],
       ],
     ]..shuffle(_random);
@@ -421,6 +437,34 @@ class _QuizScreenState extends State<QuizScreen> {
       }
     });
     widget.store.save();
+    _focusTask();
+  }
+
+  /// Edits the card being asked right now (e.g. to fix a typo spotted
+  /// mid-quiz). The question, expected answer, and any on-screen choice
+  /// option update in place; stats and group rotation are untouched.
+  Future<void> _editCurrentCard() async {
+    final edited = card;
+    final oldExpected = expected;
+    final result = await showEditCardDialog(
+      context,
+      card: edited,
+      nativeLanguage: deck.nativeLabel,
+      targetLanguage: deck.targetLabel,
+    );
+    if (result == null || !mounted) return;
+    setState(() {
+      edited.native = result.native;
+      edited.target = result.target;
+      // The correct option's text changed with the card — swap it so
+      // picking (or highlighting) the right answer still works.
+      if (_isChoice) {
+        final i = _choices
+            .indexWhere((c) => _normalize(c) == _normalize(oldExpected));
+        if (i != -1) _choices[i] = expected;
+      }
+    });
+    await widget.store.save();
     _focusTask();
   }
 
@@ -530,6 +574,16 @@ class _QuizScreenState extends State<QuizScreen> {
           ),
         ),
         actions: [
+          if (_phase == _Phase.asking || _phase == _Phase.answered) ...[
+            IconButton(
+              icon: const Icon(Icons.edit_outlined, size: 20),
+              tooltip: 'Edit this card',
+              // Frozen while an AI grade is in flight — editing would
+              // change the expected answer mid-check.
+              onPressed: _aiChecking ? null : _editCurrentCard,
+            ),
+            const SizedBox(width: 4),
+          ],
           _ScorePill(
               icon: Icons.check,
               color: SprakTheme.success,
@@ -763,7 +817,9 @@ class _QuizScreenState extends State<QuizScreen> {
             textAlign: TextAlign.center,
             style: const TextStyle(fontSize: 22),
             decoration: InputDecoration(
-              hintText: _askInTarget ? deck.nativeLabel : deck.targetLabel,
+              hintText: deck.isLanguage
+                  ? (_askInTarget ? deck.nativeLanguage : deck.targetLanguage)
+                  : 'Your answer',
               contentPadding:
                   const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
             ),
@@ -970,17 +1026,21 @@ class _QuizScreenState extends State<QuizScreen> {
       children: [
         for (var row = 0; row * 2 < _choices.length; row++) ...[
           if (row > 0) const SizedBox(height: 8),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(child: _buildChoiceTile(context, row * 2)),
-              const SizedBox(width: 8),
-              Expanded(
-                child: row * 2 + 1 < _choices.length
-                    ? _buildChoiceTile(context, row * 2 + 1)
-                    : const SizedBox.shrink(),
-              ),
-            ],
+          // IntrinsicHeight + stretch: both tiles in a row take the
+          // taller one's height instead of shrinking to their own text.
+          IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(child: _buildChoiceTile(context, row * 2)),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: row * 2 + 1 < _choices.length
+                      ? _buildChoiceTile(context, row * 2 + 1)
+                      : const SizedBox.shrink(),
+                ),
+              ],
+            ),
           ),
         ],
       ],
@@ -1008,6 +1068,9 @@ class _QuizScreenState extends State<QuizScreen> {
         onTap: answered ? null : () => _checkChoice(i),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          // Centers the content when the tile is stretched to match a
+          // taller neighbor in the two-column grid.
+          alignment: Alignment.center,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(12),
             border: Border.all(

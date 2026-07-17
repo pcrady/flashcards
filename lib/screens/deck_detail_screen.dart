@@ -269,7 +269,8 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
       _baseFormSuggestion = null;
       _translationSuggestion = null;
     });
-    _nativeFocus.requestFocus();
+    // Back to the panel's first (left) field.
+    (deck.isLanguage ? _nativeFocus : _targetFocus).requestFocus();
   }
 
   Future<void> _editCard(CardItem card) async {
@@ -344,6 +345,28 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
           if (added == 0 && removed == 0) 'No changes applied',
         ].join(', ')),
       ),
+    );
+  }
+
+  /// One side's input in the add-card panel: the text field with any
+  /// suggestion dropdown(s) beneath it.
+  Widget _addField({required bool isNative}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        TextField(
+          controller: isNative ? _nativeController : _targetController,
+          focusNode: isNative ? _nativeFocus : _targetFocus,
+          decoration: InputDecoration(
+            labelText: isNative ? deck.nativeLabel : deck.targetLabel,
+          ),
+          // Keep focus on submit — the default behavior unfocuses the
+          // field, which swallows rapid Enter presses.
+          onEditingComplete: () {},
+          onSubmitted: (_) => _onSubmit(fromNative: isNative),
+        ),
+        ..._suggestionsUnder(isNative: isNative),
+      ],
     );
   }
 
@@ -484,27 +507,10 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                         Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
+                            // Language decks read native → target; other
+                            // decks read Front → Back (target → native).
                             Expanded(
-                              child: Column(
-                                crossAxisAlignment:
-                                    CrossAxisAlignment.stretch,
-                                children: [
-                                  TextField(
-                                    controller: _nativeController,
-                                    focusNode: _nativeFocus,
-                                    decoration: InputDecoration(
-                                      labelText: deck.nativeLabel,
-                                    ),
-                                    // Keep focus on submit — the default
-                                    // behavior unfocuses the field, which
-                                    // swallows rapid Enter presses.
-                                    onEditingComplete: () {},
-                                    onSubmitted: (_) =>
-                                        _onSubmit(fromNative: true),
-                                  ),
-                                  ..._suggestionsUnder(isNative: true),
-                                ],
-                              ),
+                              child: _addField(isNative: deck.isLanguage),
                             ),
                             Padding(
                               padding: const EdgeInsets.symmetric(
@@ -520,23 +526,7 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                                       color: SprakTheme.inkSoft),
                             ),
                             Expanded(
-                              child: Column(
-                                crossAxisAlignment:
-                                    CrossAxisAlignment.stretch,
-                                children: [
-                                  TextField(
-                                    controller: _targetController,
-                                    focusNode: _targetFocus,
-                                    decoration: InputDecoration(
-                                      labelText: deck.targetLabel,
-                                    ),
-                                    onEditingComplete: () {},
-                                    onSubmitted: (_) =>
-                                        _onSubmit(fromNative: false),
-                                  ),
-                                  ..._suggestionsUnder(isNative: false),
-                                ],
-                              ),
+                              child: _addField(isNative: !deck.isLanguage),
                             ),
                             const SizedBox(width: 14),
                             Padding(

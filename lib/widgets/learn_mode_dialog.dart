@@ -5,9 +5,10 @@ import '../screens/quiz_screen.dart';
 import '../storage.dart';
 import '../theme.dart';
 
-/// Asks how to study (whole deck / continue / focus on mistakes) and how
-/// to answer (multiple choice / typing / both), then opens the quiz.
-/// Resuming skips the second question — the style is saved in the session.
+/// Asks how to study (whole deck / continue / focus on mistakes), how to
+/// answer (multiple choice / typing / both), and which side to be quizzed
+/// on (front / back / both), then opens the quiz. Resuming skips the
+/// follow-up questions — the choices are saved in the session.
 Future<void> startLearning(
     BuildContext context, DeckStore store, Deck deck) async {
   if (deck.cards.isEmpty) return;
@@ -63,9 +64,11 @@ Future<void> startLearning(
 
   QuizStyle? style;
   var grading = GradingMode.exact;
+  var direction = QuizDirection.both;
   if (mode == QuizMode.resume) {
     style = session?.style ?? QuizStyle.typing;
     grading = session?.grading ?? GradingMode.exact;
+    direction = session?.direction ?? QuizDirection.both;
   } else {
     style = await showDialog<QuizStyle>(
       context: context,
@@ -88,7 +91,7 @@ Future<void> startLearning(
               _ModeTile(
                 icon: Icons.keyboard_alt_outlined,
                 title: 'Typing',
-                subtitle: 'Type every answer, in both directions.',
+                subtitle: 'Type every answer.',
                 onTap: () => Navigator.pop(context, QuizStyle.typing),
               ),
               const SizedBox(height: 10),
@@ -96,7 +99,7 @@ Future<void> startLearning(
                 icon: Icons.all_inclusive,
                 title: 'Both',
                 subtitle: 'Each card must clear multiple choice AND '
-                    'typing in both directions.',
+                    'typing.',
                 onTap: () => Navigator.pop(context, QuizStyle.both),
               ),
             ],
@@ -111,6 +114,51 @@ Future<void> startLearning(
       ),
     );
     if (style == null || !context.mounted) return;
+
+    final pickedDirection = await showDialog<QuizDirection>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Which side do you want to be quizzed on?'),
+        content: SizedBox(
+          width: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _ModeTile(
+                icon: Icons.arrow_forward,
+                title: '${deck.targetLabel} → ${deck.nativeLabel}',
+                subtitle: 'See the ${deck.targetLabel} side, answer with '
+                    'the ${deck.nativeLabel} side.',
+                onTap: () => Navigator.pop(context, QuizDirection.front),
+              ),
+              const SizedBox(height: 10),
+              _ModeTile(
+                icon: Icons.arrow_back,
+                title: '${deck.nativeLabel} → ${deck.targetLabel}',
+                subtitle: 'See the ${deck.nativeLabel} side, answer with '
+                    'the ${deck.targetLabel} side.',
+                onTap: () => Navigator.pop(context, QuizDirection.back),
+              ),
+              const SizedBox(height: 10),
+              _ModeTile(
+                icon: Icons.swap_horiz,
+                title: 'Both directions',
+                subtitle: 'Each card is asked both ways.',
+                onTap: () => Navigator.pop(context, QuizDirection.both),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+    if (pickedDirection == null || !context.mounted) return;
+    direction = pickedDirection;
 
     // Typed answers in math/general decks can be judged by AI, since
     // equivalent notation ("0.5" vs "1/2") shouldn't count as wrong.
@@ -162,7 +210,8 @@ Future<void> startLearning(
           deck: deck,
           mode: mode,
           style: style!,
-          grading: grading),
+          grading: grading,
+          direction: direction),
     ),
   );
 }
