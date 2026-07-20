@@ -86,11 +86,28 @@ class CardItem {
   })  : id = id ?? _uuid.v4(),
         reviews = reviews ?? [];
 
-  /// Consecutive correct answers at the end of the history.
+  /// Reviews less than this far apart belong to one sitting (e.g. both
+  /// directions of a card asked in the same session).
+  static const _sittingGap = Duration(hours: 12);
+
+  /// Consecutive fully-correct sittings at the end of the history. A
+  /// sitting counts only if every first attempt in it was correct, so in
+  /// both-directions mode a card must be answered right on both sides to
+  /// earn +1; one wrong side resets the streak.
   int get streak {
     var s = 0;
-    for (var i = reviews.length - 1; i >= 0 && reviews[i].correct; i--) {
+    var i = reviews.length - 1;
+    while (i >= 0) {
+      var start = i;
+      while (start > 0 &&
+          reviews[start].at.difference(reviews[start - 1].at) < _sittingGap) {
+        start--;
+      }
+      for (var j = start; j <= i; j++) {
+        if (!reviews[j].correct) return s;
+      }
       s++;
+      i = start - 1;
     }
     return s;
   }
@@ -98,12 +115,12 @@ class CardItem {
   DateTime? get lastReviewedAt =>
       reviews.isEmpty ? null : reviews.last.at;
 
-  /// New: never studied. Learning: fewer than two correct answers in a
-  /// row. Strong: on a streak and seen recently. Fading: was strong but
-  /// untouched for 14+ days — presumed decaying.
+  /// New: never studied. Learning: fewer than three fully-correct
+  /// sittings in a row. Strong: on a streak and seen recently. Fading:
+  /// was strong but untouched for 14+ days — presumed decaying.
   Mastery get mastery {
     if (reviews.isEmpty) return Mastery.newCard;
-    if (streak < 2) return Mastery.learning;
+    if (streak < 3) return Mastery.learning;
     final idle = DateTime.now().difference(reviews.last.at);
     return idle.inDays >= 14 ? Mastery.fading : Mastery.strong;
   }

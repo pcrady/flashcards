@@ -299,7 +299,7 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
   /// Cards in display order for the current sort mode. Sorting is applied
   /// to a copy — the stored order ("as added") is never mutated.
   List<CardItem> get _sortedCards {
-    if (_sortMode == _SortMode.added) return deck.cards;
+    if (_sortMode == _SortMode.added) return deck.cards.reversed.toList();
     return List.of(deck.cards)
       ..sort((a, b) {
         final byWrong = b.timesWrong.compareTo(a.timesWrong);
@@ -596,7 +596,7 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                         itemBuilder: (context) => const [
                           PopupMenuItem(
                             value: _SortMode.added,
-                            child: Text('As added'),
+                            child: Text('Newest first'),
                           ),
                           PopupMenuItem(
                             value: _SortMode.mostMissed,
@@ -611,7 +611,7 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                             const SizedBox(width: 6),
                             Text(
                               _sortMode == _SortMode.added
-                                  ? 'Sort: As added'
+                                  ? 'Sort: Newest first'
                                   : 'Sort: Most missed',
                               style: TextStyle(
                                   color: SprakTheme.inkSoft, fontSize: 13),
