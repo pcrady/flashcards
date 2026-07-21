@@ -359,7 +359,12 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
           focusNode: isNative ? _nativeFocus : _targetFocus,
           decoration: InputDecoration(
             labelText: isNative ? deck.nativeLabel : deck.targetLabel,
+            alignLabelWithHint: true,
           ),
+          minLines: 5,
+          maxLines: 5,
+          // Enter still submits instead of inserting a newline — see below.
+          textInputAction: TextInputAction.done,
           // Keep focus on submit — the default behavior unfocuses the
           // field, which swallows rapid Enter presses.
           onEditingComplete: () {},
@@ -471,7 +476,7 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
       body: Align(
         alignment: Alignment.topCenter,
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 860),
+          constraints: const BoxConstraints(maxWidth: 1100),
           child: Column(
             children: [
               // --- Add-card panel with auto-translation ---

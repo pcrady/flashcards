@@ -25,12 +25,25 @@ Future<({String native, String target})?> showEditCardDialog(
             TextField(
               controller: targetController,
               autofocus: true,
-              decoration: InputDecoration(labelText: targetLanguage),
+              decoration: InputDecoration(
+                labelText: targetLanguage,
+                alignLabelWithHint: true,
+              ),
+              minLines: 5,
+              maxLines: 5,
+              textInputAction: TextInputAction.next,
             ),
             const SizedBox(height: 14),
             TextField(
               controller: nativeController,
-              decoration: InputDecoration(labelText: nativeLanguage),
+              decoration: InputDecoration(
+                labelText: nativeLanguage,
+                alignLabelWithHint: true,
+              ),
+              minLines: 5,
+              maxLines: 5,
+              // Enter still submits instead of inserting a newline.
+              textInputAction: TextInputAction.done,
               onSubmitted: (_) => Navigator.pop(context, true),
             ),
           ],
