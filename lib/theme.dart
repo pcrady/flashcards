@@ -21,6 +21,7 @@ class SprakTheme {
   static const Color magenta = Color(0xFFF0509E);
   static const Color success = Color(0xFF35E08C);
   static const Color danger = Color(0xFFFF6B7A);
+  static const Color warning = Color(0xFFF5C542);
   static const Color onFjord = Color(0xFF04231A); // text on mint
 
   static const LinearGradient aurora = LinearGradient(

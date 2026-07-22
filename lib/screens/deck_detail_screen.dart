@@ -36,6 +36,8 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
   final _targetFocus = FocusNode();
   final _baseFormFocus = FocusNode();
   final _translationFocus = FocusNode();
+  final _searchController = TextEditingController();
+  final _searchFocus = FocusNode();
 
   bool _translating = false;
   String? _translateError;
@@ -77,6 +79,7 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
     super.initState();
     _nativeController.addListener(() => _onTyped(fromNative: true));
     _targetController.addListener(() => _onTyped(fromNative: false));
+    _searchController.addListener(() => setState(() {}));
   }
 
   @override
@@ -87,7 +90,19 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
     _targetFocus.dispose();
     _baseFormFocus.dispose();
     _translationFocus.dispose();
+    _searchController.dispose();
+    _searchFocus.dispose();
     super.dispose();
+  }
+
+  /// Focuses (and selects the contents of) the search field, for the
+  /// Cmd/Ctrl+F shortcut.
+  void _focusSearch() {
+    _searchFocus.requestFocus();
+    _searchController.selection = TextSelection(
+      baseOffset: 0,
+      extentOffset: _searchController.text.length,
+    );
   }
 
   void _onTyped({required bool fromNative}) {
@@ -310,6 +325,33 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
 
   String _norm(String s) => s.toLowerCase().trim();
 
+  /// IDs of cards that share the same native+target pair with at least
+  /// one other card in the deck.
+  Set<String> get _duplicateCardIds {
+    final byPair = <String, List<String>>{};
+    for (final c in deck.cards) {
+      final key = '${_norm(c.native)} ${_norm(c.target)}';
+      byPair.putIfAbsent(key, () => []).add(c.id);
+    }
+    return {
+      for (final ids in byPair.values)
+        if (ids.length > 1) ...ids,
+    };
+  }
+
+  /// Sorted cards filtered by the search box, matched case-insensitively
+  /// as a prefix against either side of the card.
+  List<CardItem> get _visibleCards {
+    final query = _norm(_searchController.text);
+    final sorted = _sortedCards;
+    if (query.isEmpty) return sorted;
+    return sorted
+        .where((c) =>
+            _norm(c.native).startsWith(query) ||
+            _norm(c.target).startsWith(query))
+        .toList();
+  }
+
   Future<void> _openAiEdit() async {
     final plan = await showDialog<DeckEditPlan>(
       context: context,
@@ -434,7 +476,14 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return CallbackShortcuts(
+      bindings: {
+        LogicalKeySet(LogicalKeyboardKey.control, LogicalKeyboardKey.keyF):
+            _focusSearch,
+        LogicalKeySet(LogicalKeyboardKey.meta, LogicalKeyboardKey.keyF):
+            _focusSearch,
+      },
+      child: Scaffold(
       appBar: AppBar(
         title: InkWell(
           onTap: _renameDeck,
@@ -581,15 +630,55 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                     ],
                   ),
                 ),
-              // --- Sort bar ---
+              // --- Search + sort bar ---
               if (deck.cards.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
                   child: Row(
                     children: [
+                      SizedBox(
+                        width: 220,
+                        height: 36,
+                        child: TextField(
+                          controller: _searchController,
+                          focusNode: _searchFocus,
+                          style: const TextStyle(fontSize: 13),
+                          decoration: InputDecoration(
+                            isDense: true,
+                            hintText: 'Search cards',
+                            hintStyle: TextStyle(
+                                color: SprakTheme.inkSoft, fontSize: 13),
+                            prefixIcon: Icon(Icons.search,
+                                size: 18, color: SprakTheme.inkSoft),
+                            prefixIconConstraints: const BoxConstraints(
+                                minWidth: 34, minHeight: 34),
+                            suffixIcon: _searchController.text.isEmpty
+                                ? null
+                                : IconButton(
+                                    icon: const Icon(Icons.close, size: 16),
+                                    color: SprakTheme.inkSoft,
+                                    onPressed: () {
+                                      _searchController.clear();
+                                      _searchFocus.requestFocus();
+                                    },
+                                  ),
+                            suffixIconConstraints: const BoxConstraints(
+                                minWidth: 34, minHeight: 34),
+                            contentPadding: EdgeInsets.zero,
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 14),
                       Text(
-                        '${deck.cards.length} '
-                        '${deck.cards.length == 1 ? "card" : "cards"}',
+                        _searchController.text.trim().isEmpty
+                            ? '${deck.cards.length} '
+                                '${deck.cards.length == 1 ? "card" : "cards"}'
+                            : '${_visibleCards.length} of '
+                                '${deck.cards.length} '
+                                '${deck.cards.length == 1 ? "card" : "cards"}',
                         style: TextStyle(
                             color: SprakTheme.inkSoft, fontSize: 13),
                       ),
@@ -634,14 +723,28 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                         child: Text('No cards in this set yet.',
                             style: TextStyle(color: SprakTheme.inkSoft)),
                       )
-                    : ListView.separated(
+                    : _visibleCards.isEmpty
+                        ? Center(
+                            child: Text('No cards match your search.',
+                                style: TextStyle(color: SprakTheme.inkSoft)),
+                          )
+                        : ListView.separated(
                         padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
-                        itemCount: deck.cards.length,
+                        itemCount: _visibleCards.length,
                         separatorBuilder: (_, i) =>
                             const SizedBox(height: 8),
                         itemBuilder: (context, i) {
-                          final card = _sortedCards[i];
+                          final card = _visibleCards[i];
+                          final isDuplicate =
+                              _duplicateCardIds.contains(card.id);
                           return Card(
+                            shape: isDuplicate
+                                ? RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                    side: const BorderSide(
+                                        color: SprakTheme.warning, width: 1.5),
+                                  )
+                                : null,
                             child: ListTile(
                               contentPadding: const EdgeInsets.symmetric(
                                   horizontal: 12, vertical: 4),
@@ -657,13 +760,53 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                                               deck.targetLanguage)),
                                     )
                                   : null,
-                              title: TexText(card.target,
-                                  style: SprakTheme.vocab(size: 20)),
+                              title: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Flexible(
+                                    child: TexText(card.target,
+                                        style: SprakTheme.vocab(size: 20)),
+                                  ),
+                                  if (isDuplicate) ...[
+                                    const SizedBox(width: 8),
+                                    Tooltip(
+                                      message: 'Another card has the same '
+                                          '${deck.nativeLabel} / '
+                                          '${deck.targetLabel}',
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 6, vertical: 2),
+                                        decoration: BoxDecoration(
+                                          color: SprakTheme.warning
+                                              .withValues(alpha: 0.15),
+                                          borderRadius:
+                                              BorderRadius.circular(999),
+                                        ),
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Icon(Icons.warning_amber_rounded,
+                                                size: 13,
+                                                color: SprakTheme.warning),
+                                            const SizedBox(width: 3),
+                                            Text('Duplicate',
+                                                style: TextStyle(
+                                                    color: SprakTheme.warning,
+                                                    fontSize: 11,
+                                                    fontWeight:
+                                                        FontWeight.w700)),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
                               subtitle: Padding(
                                 padding: const EdgeInsets.only(top: 2),
                                 child: TexText(card.native,
-                                    style: TextStyle(
-                                        color: SprakTheme.inkSoft)),
+                                    style:
+                                        TextStyle(color: SprakTheme.inkSoft)),
                               ),
                               trailing: Row(
                                 mainAxisSize: MainAxisSize.min,
@@ -725,6 +868,7 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
             ],
           ),
         ),
+      ),
       ),
     );
   }
