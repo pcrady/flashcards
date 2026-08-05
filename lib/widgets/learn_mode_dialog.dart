@@ -45,7 +45,8 @@ Future<void> startLearning(
               icon: Icons.local_fire_department_outlined,
               title: 'Focus on mistakes',
               subtitle:
-                  'The words and phrases you miss most often come first.',
+                  'Drill just the hardest slice — the words you miss most '
+                  'and the ones you’ve barely practiced.',
               onTap: () => Navigator.pop(context, QuizMode.mistakes),
             ),
           ],
@@ -61,6 +62,53 @@ Future<void> startLearning(
   );
 
   if (mode == null || !context.mounted) return;
+
+  // "Focus on mistakes" studies only a slice of the deck — the hardest
+  // cards — so ask how big a slice.
+  var mistakeFraction = 1.0;
+  if (mode == QuizMode.mistakes) {
+    final fraction = await showDialog<double>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('How much to focus on?'),
+        content: SizedBox(
+          width: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Study just your hardest cards — the ones you miss most '
+                'often (by wrong-to-correct ratio), along with any you’ve '
+                'practiced fewer than 30 times. Pick how big a slice.',
+                style: TextStyle(color: SprakTheme.inkSoft, fontSize: 13),
+              ),
+              const SizedBox(height: 18),
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: [
+                  for (final pct in [10, 20, 30, 40, 50, 60, 70, 80, 90])
+                    OutlinedButton(
+                      onPressed: () => Navigator.pop(context, pct / 100),
+                      child: Text('Top $pct%'),
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+    if (fraction == null || !context.mounted) return;
+    mistakeFraction = fraction;
+  }
 
   QuizStyle? style;
   var grading = GradingMode.exact;
@@ -211,7 +259,8 @@ Future<void> startLearning(
           mode: mode,
           style: style!,
           grading: grading,
-          direction: direction),
+          direction: direction,
+          mistakeFraction: mistakeFraction),
     ),
   );
 }

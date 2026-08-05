@@ -10,13 +10,31 @@ class TexText extends StatelessWidget {
   final TextStyle? style;
   final TextAlign? textAlign;
 
-  const TexText(this.text, {super.key, this.style, this.textAlign});
+  /// Lets the text be selected and copied. Off by default, and only ever
+  /// safe on text nothing can be clicked through: the [SelectionArea] it
+  /// needs puts a translucent tap-and-pan recognizer over its subtree,
+  /// which steals clicks from buttons underneath and takes keyboard focus
+  /// away from whatever owns the screen's shortcuts.
+  final bool selectable;
+
+  const TexText(
+    this.text, {
+    super.key,
+    this.style,
+    this.textAlign,
+    this.selectable = false,
+  });
 
   static final _mathPattern =
       RegExp(r'\$\$(.+?)\$\$|\$(.+?)\$', dotAll: true);
 
   @override
   Widget build(BuildContext context) {
+    final content = _buildText(context);
+    return selectable ? SelectionArea(child: content) : content;
+  }
+
+  Widget _buildText(BuildContext context) {
     final matches = _mathPattern.allMatches(text).toList();
     if (matches.isEmpty) {
       return Text(text, style: style, textAlign: textAlign);

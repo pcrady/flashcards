@@ -144,40 +144,6 @@ class _ChatBoxState extends State<ChatBox> {
     }
   }
 
-  Widget _bubble({required bool isUser, required String text}) {
-    return Align(
-      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 4),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        constraints: const BoxConstraints(maxWidth: 520),
-        decoration: BoxDecoration(
-          color: isUser ? null : SprakTheme.surface,
-          gradient: isUser
-              ? const LinearGradient(colors: [
-                  Color(0xFF7B5CF0),
-                  SprakTheme.magenta,
-                ])
-              : null,
-          borderRadius: BorderRadius.only(
-            topLeft: const Radius.circular(16),
-            topRight: const Radius.circular(16),
-            bottomLeft: Radius.circular(isUser ? 16 : 4),
-            bottomRight: Radius.circular(isUser ? 4 : 16),
-          ),
-          border: isUser ? null : Border.all(color: SprakTheme.line),
-        ),
-        child: TexText(
-          text,
-          style: TextStyle(
-            color: isUser ? Colors.white : SprakTheme.ink,
-            height: 1.4,
-          ),
-        ),
-      ),
-    );
-  }
-
   Widget _dockButton(ChatPosition position, IconData icon, String tooltip) {
     final active = widget.position == position;
     return IconButton(
@@ -248,23 +214,39 @@ class _ChatBoxState extends State<ChatBox> {
                       style: TextStyle(color: SprakTheme.inkSoft),
                     ),
                   )
-                : ListView.builder(
+                // A non-lazy scroll view (all bubbles laid out up front)
+                // rather than ListView.builder: a tutor session holds few
+                // enough messages that building them all is cheap, and it
+                // means bubbles never get lazily disposed/rebuilt or the
+                // scroll extent re-estimated as you scroll — which is what
+                // made the list lurch and "load in and out".
+                : SingleChildScrollView(
                     controller: _scrollController,
                     padding: const EdgeInsets.symmetric(
                         horizontal: 20, vertical: 4),
-                    itemCount:
-                        _messages.length + (_streamingReply != null ? 1 : 0),
-                    itemBuilder: (context, i) {
-                      if (i == _messages.length) {
-                        final streaming = _streamingReply!;
-                        return _bubble(
-                          isUser: false,
-                          text: streaming.isEmpty ? '…' : streaming,
-                        );
-                      }
-                      final m = _messages[i];
-                      return _bubble(isUser: m.role == 'user', text: m.text);
-                    },
+                    // One region over the whole transcript so a selection
+                    // can run across bubbles. Safe here because the
+                    // transcript holds no buttons — see [TexText.selectable]
+                    // for why this must never wrap interactive widgets.
+                    child: SelectionArea(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          for (final m in _messages)
+                            _ChatBubble(
+                              isUser: m.role == 'user',
+                              text: m.text,
+                            ),
+                          if (_streamingReply != null)
+                            _ChatBubble(
+                              isUser: false,
+                              text: _streamingReply!.isEmpty
+                                  ? '…'
+                                  : _streamingReply!,
+                            ),
+                        ],
+                      ),
+                    ),
                   ),
           ),
           if (_error != null)
@@ -310,6 +292,57 @@ class _ChatBoxState extends State<ChatBox> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// A single chat bubble, isolated behind a [RepaintBoundary] so that a
+/// streaming update or scroll only repaints the bubble that changed rather
+/// than every sibling — the LaTeX and rich-text layout in [TexText] is
+/// expensive to repaint.
+class _ChatBubble extends StatelessWidget {
+  final bool isUser;
+  final String text;
+
+  const _ChatBubble({
+    required this.isUser,
+    required this.text,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return RepaintBoundary(
+      child: Align(
+        alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+        child: Container(
+          margin: const EdgeInsets.symmetric(vertical: 4),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          constraints: const BoxConstraints(maxWidth: 520),
+          decoration: BoxDecoration(
+            color: isUser ? null : SprakTheme.surface,
+            gradient: isUser
+                ? const LinearGradient(colors: [
+                    Color(0xFF7B5CF0),
+                    SprakTheme.magenta,
+                  ])
+                : null,
+            borderRadius: BorderRadius.only(
+              topLeft: const Radius.circular(16),
+              topRight: const Radius.circular(16),
+              bottomLeft: Radius.circular(isUser ? 16 : 4),
+              bottomRight: Radius.circular(isUser ? 4 : 16),
+            ),
+            border: isUser ? null : Border.all(color: SprakTheme.line),
+          ),
+          child: TexText(
+            text,
+            style: TextStyle(
+              color: isUser ? Colors.white : SprakTheme.ink,
+              height: 1.4,
+            ),
+          ),
+        ),
       ),
     );
   }

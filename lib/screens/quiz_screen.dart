@@ -31,6 +31,11 @@ enum QuizMode {
 
 const int _kGroupSize = 6;
 
+/// Below this many total attempts (wrong + correct) a card's ratio isn't
+/// trustworthy, so "focus on mistakes" assumes the learner doesn't know it
+/// yet and ranks it above cards that have enough history.
+const int _kMistakeMinAttempts = 30;
+
 /// One quiz task: a card asked in a specific direction, answered either by
 /// typing or by picking from multiple choice.
 typedef _Task = ({CardItem card, bool askInTarget, bool isChoice});
@@ -47,6 +52,12 @@ class QuizScreen extends StatefulWidget {
   final QuizStyle style;
   final GradingMode grading;
   final QuizDirection direction;
+
+  /// For [QuizMode.mistakes]: the fraction of the deck to study, taken from
+  /// the hardest cards first (e.g. 0.1 = the worst 10%). Ignored by other
+  /// modes.
+  final double mistakeFraction;
+
   const QuizScreen({
     super.key,
     required this.store,
@@ -55,6 +66,7 @@ class QuizScreen extends StatefulWidget {
     this.style = QuizStyle.typing,
     this.grading = GradingMode.exact,
     this.direction = QuizDirection.both,
+    this.mistakeFraction = 1.0,
   });
 
   @override
@@ -122,6 +134,10 @@ class _QuizScreenState extends State<QuizScreen> {
   int? _selectedChoice;
   final _choiceFocus = FocusNode();
 
+  /// Keyboard focus for the group/deck-cleared screens, so Enter advances
+  /// there too after the chat panel has held focus.
+  final _clearedFocus = FocusNode();
+
   Deck get deck => widget.deck;
   List<CardItem> get _group => _groups[_groupIndex];
   _Task get _task => _remaining.first;
@@ -169,6 +185,7 @@ class _QuizScreenState extends State<QuizScreen> {
     _answerController.dispose();
     _answerFocus.dispose();
     _choiceFocus.dispose();
+    _clearedFocus.dispose();
     TtsService().stop();
     final original = _originalLayoutId;
     if (original != null) KeyboardLayoutService.selectById(original);
@@ -186,9 +203,15 @@ class _QuizScreenState extends State<QuizScreen> {
     }
   }
 
-  /// Focuses the answer surface of the active task, so Enter (and 1–4 for
-  /// multiple choice) keeps working without reaching for the mouse.
+  /// Focuses the answer surface of whatever is on screen, so Enter (and
+  /// 1–8 for multiple choice) keeps working without reaching for the
+  /// mouse. Also how the quiz takes focus back after the tutor chat's
+  /// input has held it.
   void _focusTask() {
+    if (_phase == _Phase.groupCleared || _phase == _Phase.deckCleared) {
+      _clearedFocus.requestFocus();
+      return;
+    }
     if (_remaining.isEmpty) return;
     (_isChoice ? _choiceFocus : _answerFocus).requestFocus();
   }
@@ -242,16 +265,28 @@ class _QuizScreenState extends State<QuizScreen> {
 
   List<CardItem> _shuffled() => List.of(deck.cards)..shuffle(_random);
 
-  /// Deck ordered worst-first: most misses, ties broken by fewest correct
-  /// answers (shuffled first so equal cards land in random order).
+  /// A card's wrong-to-correct ratio — higher means missed more often
+  /// relative to how often it was right. Zero correct answers count as a
+  /// denominator of one so an all-wrong card still ranks by its miss count
+  /// instead of dividing by zero.
+  double _mistakeRatio(CardItem c) =>
+      c.timesWrong / (c.timesCorrect == 0 ? 1 : c.timesCorrect);
+
+  /// The hardest cards for "focus on mistakes", worst-first, then trimmed to
+  /// [QuizScreen.mistakeFraction] of the deck. Cards attempted fewer than
+  /// [_kMistakeMinAttempts] times are assumed unknown and rank above cards
+  /// with enough history; within each tier the wrong:correct ratio decides,
+  /// ties broken randomly (shuffled before the sort).
   List<CardItem> _mistakeOrdered() {
     final all = List.of(deck.cards)..shuffle(_random);
     all.sort((a, b) {
-      final byWrong = b.timesWrong.compareTo(a.timesWrong);
-      if (byWrong != 0) return byWrong;
-      return a.timesCorrect.compareTo(b.timesCorrect);
+      final aUnknown = a.timesWrong + a.timesCorrect < _kMistakeMinAttempts;
+      final bUnknown = b.timesWrong + b.timesCorrect < _kMistakeMinAttempts;
+      if (aUnknown != bUnknown) return aUnknown ? -1 : 1;
+      return _mistakeRatio(b).compareTo(_mistakeRatio(a));
     });
-    return all;
+    final keep = max(1, (all.length * widget.mistakeFraction).round());
+    return all.take(keep).toList();
   }
 
   /// Partitions [ordered] into groups of six and starts the first one.
@@ -495,6 +530,7 @@ class _QuizScreenState extends State<QuizScreen> {
         _selectedChoice = null;
         _answerController.clear();
       });
+      _focusTask();
       return;
     }
 
@@ -606,16 +642,25 @@ class _QuizScreenState extends State<QuizScreen> {
     // Scrollable so tall content (8-option grids, long answers) never
     // overflows when the window or quiz pane is short.
     final quizArea = Expanded(
-      child: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 560),
-            child: switch (_phase) {
-              _Phase.deckCleared => _buildDeckCleared(),
-              _Phase.groupCleared => _buildGroupCleared(),
-              _ => _buildQuestion(context),
-            },
+      // Typing in the tutor chat moves keyboard focus into its text field,
+      // which leaves the quiz's shortcuts (1–8, Enter) dead until something
+      // asks for focus back. Any click in the quiz pane is that signal.
+      // A Listener rather than a GestureDetector: it observes the pointer
+      // without entering the gesture arena, so it can't steal the click
+      // from the button or choice tile that was actually pressed.
+      child: Listener(
+        onPointerDown: (_) => _focusTask(),
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 560),
+              child: switch (_phase) {
+                _Phase.deckCleared => _buildDeckCleared(),
+                _Phase.groupCleared => _buildGroupCleared(),
+                _ => _buildQuestion(context),
+              },
+            ),
           ),
         ),
       ),
@@ -791,6 +836,7 @@ class _QuizScreenState extends State<QuizScreen> {
                 prompt,
                 textAlign: TextAlign.center,
                 style: SprakTheme.vocab(size: 44),
+                selectable: true,
               ),
             ),
             if (_askInTarget && deck.isLanguage) ...[
@@ -913,18 +959,21 @@ class _QuizScreenState extends State<QuizScreen> {
                 if (_lastCorrect!)
                   TexText('$prompt  →  $expected',
                       textAlign: TextAlign.center,
-                      style: const TextStyle(fontSize: 17))
+                      style: const TextStyle(fontSize: 17),
+                      selectable: true)
                 else ...[
                   // Missed — make the correct answer the star of the card.
                   const SizedBox(height: 4),
                   TexText(expected,
                       textAlign: TextAlign.center,
-                      style: SprakTheme.vocab(size: 28)),
+                      style: SprakTheme.vocab(size: 28),
+                      selectable: true),
                   const SizedBox(height: 4),
                   TexText(prompt,
                       textAlign: TextAlign.center,
                       style: TextStyle(
-                          color: SprakTheme.inkSoft, fontSize: 14)),
+                          color: SprakTheme.inkSoft, fontSize: 14),
+                      selectable: true),
                 ],
                 if (!_lastCorrect! && !_isChoice) ...[
                   const SizedBox(height: 6),
@@ -1119,6 +1168,7 @@ class _QuizScreenState extends State<QuizScreen> {
         const SingleActivator(LogicalKeyboardKey.numpadEnter): _next,
       },
       child: Focus(
+        focusNode: _clearedFocus,
         autofocus: true,
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -1155,6 +1205,7 @@ class _QuizScreenState extends State<QuizScreen> {
             Navigator.of(context).pop(),
       },
       child: Focus(
+        focusNode: _clearedFocus,
         autofocus: true,
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,

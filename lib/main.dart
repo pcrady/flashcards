@@ -31,18 +31,12 @@ class _SprakAppState extends State<SprakApp> {
       title: 'språk',
       debugShowCheckedModeBanner: false,
       theme: SprakTheme.dark(),
-      // Make all text in the app selectable (for copying words). The
-      // Overlay hosts SelectionArea's handles/context menu — the builder
-      // sits above the Navigator, so there isn't one yet.
-      builder: (context, child) => Overlay(
-        initialEntries: [
-          OverlayEntry(
-            builder: (_) => SelectionArea(
-              child: child ?? const SizedBox.shrink(),
-            ),
-          ),
-        ],
-      ),
+      // NOTE: no app-wide SelectionArea. A SelectableRegion installs a
+      // translucent tap-and-pan recognizer over everything beneath it and
+      // grabs primary focus on every mouse-down, so wrapping the whole app
+      // made buttons swallow clicks (a 2px drag beats the button's tap) and
+      // killed the quiz's keyboard shortcuts. Selection is opted into
+      // around read-only text instead — see [SelectableText] usages.
       home: DeckListScreen(store: store),
     );
   }
