@@ -8,6 +8,7 @@ import '../services/tts_service.dart';
 import '../storage.dart';
 import '../theme.dart';
 import '../widgets/ai_deck_edit_dialog.dart';
+import '../widgets/card_note.dart';
 import '../widgets/edit_card_dialog.dart';
 import '../widgets/learn_mode_dialog.dart';
 import '../widgets/manage_tags_dialog.dart';
@@ -34,6 +35,7 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
   _SortMode _sortMode = _SortMode.added;
   final _nativeController = TextEditingController();
   final _targetController = TextEditingController();
+  final _notesController = TextEditingController();
   final _nativeFocus = FocusNode();
   final _targetFocus = FocusNode();
   final _baseFormFocus = FocusNode();
@@ -48,6 +50,11 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
   /// Tags applied to the next card added. Kept between adds, since cards
   /// of the same kind are usually entered in a run.
   List<String> _newCardTags = [];
+
+  /// Tags the card list is narrowed to. Empty means every card; with tags
+  /// picked, a card shows if it carries any of them. Also seeds the study
+  /// dialog's filter, so "show me just the verbs" carries into a session.
+  List<String> _filterTags = [];
 
   /// Pending suggestions, shown as dropdowns the user must pick (click, or
   /// ↓ then Enter) before they land in the text boxes: when the typed word
@@ -92,6 +99,7 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
   void dispose() {
     _nativeController.dispose();
     _targetController.dispose();
+    _notesController.dispose();
     _nativeFocus.dispose();
     _targetFocus.dispose();
     _baseFormFocus.dispose();
@@ -281,12 +289,18 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
     if (native.isEmpty || target.isEmpty) return;
 
     deck.cards.add(
-      CardItem(native: native, target: target, tags: List.of(_newCardTags)),
+      CardItem(
+        native: native,
+        target: target,
+        notes: _notesController.text.trim(),
+        tags: List.of(_newCardTags),
+      ),
     );
     await widget.store.save();
     _requestSeq++; // invalidate any in-flight translation
     _nativeController.clear();
     _targetController.clear();
+    _notesController.clear();
     setState(() {
       _translateError = null;
       _baseFormSuggestion = null;
@@ -301,6 +315,7 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
     if (result != null) {
       card.native = result.native;
       card.target = result.target;
+      card.notes = result.notes;
       card.tags = result.tags;
     }
     // Even a cancelled edit can have added a tag to the deck.
@@ -311,11 +326,10 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
   Future<void> _manageTags() async {
     await showManageTagsDialog(context, deck);
     if (!mounted) return;
-    // Tags the dialog renamed or deleted must not linger on the next card.
-    _newCardTags = [
-      for (final t in _newCardTags)
-        if (deck.tags.contains(t)) t,
-    ];
+    // Tags the dialog renamed or deleted must not linger on the next card
+    // or keep filtering the list.
+    _newCardTags = deck.keepKnownTags(_newCardTags);
+    _filterTags = deck.keepKnownTags(_filterTags);
     await widget.store.save();
     if (mounted) setState(() {});
   }
@@ -357,13 +371,17 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
     };
   }
 
-  /// Sorted cards filtered by the search box, matched case-insensitively
-  /// as a prefix against either side of the card.
+  /// Sorted cards narrowed by the tag filter and then the search box,
+  /// which is matched case-insensitively as a prefix against either side
+  /// of the card.
   List<CardItem> get _visibleCards {
     final query = _norm(_searchController.text);
-    final sorted = _sortedCards;
-    if (query.isEmpty) return sorted;
-    return sorted
+    var cards = _sortedCards;
+    if (_filterTags.isNotEmpty) {
+      cards = cards.where((c) => _filterTags.any(c.tags.contains)).toList();
+    }
+    if (query.isEmpty) return cards;
+    return cards
         .where((c) =>
             _norm(c.native).startsWith(query) ||
             _norm(c.target).startsWith(query))
@@ -389,8 +407,12 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
           _norm(c.target) == _norm(a.target) &&
           _norm(c.native) == _norm(a.native));
       if (!duplicate) {
-        deck.cards
-            .add(CardItem(native: a.native, target: a.target, tags: a.tags));
+        deck.cards.add(CardItem(
+          native: a.native,
+          target: a.target,
+          notes: a.notes,
+          tags: a.tags,
+        ));
         added++;
       }
     }
@@ -400,6 +422,15 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
         if (_norm(c.target) == _norm(r.target)) {
           c.tags = List.of(r.tags);
           retagged++;
+        }
+      }
+    }
+    var renoted = 0;
+    for (final n in plan.noteEdits) {
+      for (final c in deck.cards) {
+        if (_norm(c.target) == _norm(n.target)) {
+          c.notes = n.notes;
+          renoted++;
         }
       }
     }
@@ -414,7 +445,9 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
             'removed $removed ${removed == 1 ? "card" : "cards"}',
           if (retagged > 0)
             'retagged $retagged ${retagged == 1 ? "card" : "cards"}',
-          if (added == 0 && removed == 0 && retagged == 0)
+          if (renoted > 0)
+            'updated notes on $renoted ${renoted == 1 ? "card" : "cards"}',
+          if (added == 0 && removed == 0 && retagged == 0 && renoted == 0)
             'No changes applied',
         ].join(', ')),
       ),
@@ -554,7 +587,8 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
             label: const Text('Learn'),
             onPressed: deck.cards.isEmpty
                 ? null
-                : () => startLearning(context, widget.store, deck),
+                : () => startLearning(context, widget.store, deck,
+                    initialTags: _filterTags),
           ),
           const SizedBox(width: 16),
         ],
@@ -598,26 +632,66 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                         Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            // Language decks read native → target; other
-                            // decks read Front → Back (target → native).
                             Expanded(
-                              child: _addField(isNative: deck.isLanguage),
-                            ),
-                            Padding(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 10, vertical: 14),
-                              child: _translating
-                                  ? const SizedBox(
-                                      width: 22,
-                                      height: 22,
-                                      child: CircularProgressIndicator(
-                                          strokeWidth: 2.5),
-                                    )
-                                  : Icon(Icons.swap_horiz,
-                                      color: SprakTheme.inkSoft),
-                            ),
-                            Expanded(
-                              child: _addField(isNative: !deck.isLanguage),
+                              child: Column(
+                                crossAxisAlignment:
+                                    CrossAxisAlignment.stretch,
+                                children: [
+                                  Row(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      // Language decks read native →
+                                      // target; other decks read Front →
+                                      // Back (target → native).
+                                      Expanded(
+                                        child: _addField(
+                                            isNative: deck.isLanguage),
+                                      ),
+                                      Padding(
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 10, vertical: 14),
+                                        child: _translating
+                                            ? const SizedBox(
+                                                width: 22,
+                                                height: 22,
+                                                child:
+                                                    CircularProgressIndicator(
+                                                        strokeWidth: 2.5),
+                                              )
+                                            : Icon(Icons.swap_horiz,
+                                                color: SprakTheme.inkSoft),
+                                      ),
+                                      Expanded(
+                                        child: _addField(
+                                            isNative: !deck.isLanguage),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 12),
+                                  // Notes sit under both sides, spanning
+                                  // their full width.
+                                  TextField(
+                                    controller: _notesController,
+                                    style: const TextStyle(fontSize: 13),
+                                    decoration: InputDecoration(
+                                      labelText: 'Notes (optional)',
+                                      alignLabelWithHint: true,
+                                      hintText: 'Meaning, usage, example '
+                                          'sentence…',
+                                      hintStyle: TextStyle(
+                                          color: SprakTheme.inkSoft,
+                                          fontSize: 13),
+                                    ),
+                                    minLines: 3,
+                                    maxLines: 6,
+                                    // Prose field: Enter adds a line
+                                    // instead of adding the card.
+                                    keyboardType: TextInputType.multiline,
+                                    textInputAction: TextInputAction.newline,
+                                  ),
+                                ],
+                              ),
                             ),
                             const SizedBox(width: 14),
                             Padding(
@@ -731,7 +805,8 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                       ),
                       const SizedBox(width: 14),
                       Text(
-                        _searchController.text.trim().isEmpty
+                        _searchController.text.trim().isEmpty &&
+                                _filterTags.isEmpty
                             ? '${deck.cards.length} '
                                 '${deck.cards.length == 1 ? "card" : "cards"}'
                             : '${_visibleCards.length} of '
@@ -774,6 +849,16 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                     ],
                   ),
                 ),
+              // --- Tag filter ---
+              if (deck.cards.isNotEmpty && deck.tags.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 0, 24, 10),
+                  child: TagFilterBar(
+                    deck: deck,
+                    selected: _filterTags,
+                    onChanged: (next) => setState(() => _filterTags = next),
+                  ),
+                ),
               // --- Card list ---
               Expanded(
                 child: deck.cards.isEmpty
@@ -783,7 +868,10 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                       )
                     : _visibleCards.isEmpty
                         ? Center(
-                            child: Text('No cards match your search.',
+                            child: Text(
+                                _searchController.text.trim().isEmpty
+                                    ? 'No cards carry those tags.'
+                                    : 'No cards match your search.',
                                 style: TextStyle(color: SprakTheme.inkSoft)),
                           )
                         : ListView.separated(
@@ -869,6 +957,12 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                                     TexText(card.native,
                                         style: TextStyle(
                                             color: SprakTheme.inkSoft)),
+                                    if (card.notes.isNotEmpty)
+                                      Padding(
+                                        padding:
+                                            const EdgeInsets.only(top: 6),
+                                        child: CardNote(card.notes),
+                                      ),
                                     if (card.tags.isNotEmpty)
                                       Padding(
                                         padding:

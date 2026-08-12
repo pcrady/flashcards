@@ -37,6 +37,71 @@ class TagChips extends StatelessWidget {
   }
 }
 
+/// Chips for narrowing a deck to some of its tags. Nothing selected means
+/// "all cards"; with tags selected, a card counts as matching when it
+/// carries any one of them. Renders nothing for a deck without tags.
+class TagFilterBar extends StatelessWidget {
+  final Deck deck;
+
+  /// The tags currently filtered on, as canonical names from [deck.tags].
+  final List<String> selected;
+  final ValueChanged<List<String>> onChanged;
+
+  /// Leading label, e.g. "Filter" or "Study only".
+  final String label;
+
+  const TagFilterBar({
+    super.key,
+    required this.deck,
+    required this.selected,
+    required this.onChanged,
+    this.label = 'Filter',
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (deck.tags.isEmpty) return const SizedBox.shrink();
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Icon(Icons.filter_alt_outlined, size: 16, color: SprakTheme.inkSoft),
+        const SizedBox(width: 6),
+        Text(
+          label,
+          style: TextStyle(color: SprakTheme.inkSoft, fontSize: 12.5),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              _SelectableTagChip(
+                label: 'All',
+                selected: selected.isEmpty,
+                onTap: () => onChanged([]),
+              ),
+              for (final tag in deck.tags)
+                _SelectableTagChip(
+                  label: tag,
+                  count: deck.tagUseCount(tag),
+                  color: SprakTheme.tagColor(tag),
+                  selected: selected.contains(tag),
+                  onTap: () {
+                    final next = List.of(selected);
+                    if (!next.remove(tag)) next.add(tag);
+                    onChanged(next);
+                  },
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 /// Chips for choosing which of a deck's tags apply to a card. Any number
 /// can be on at once; the trailing "New tag" chip adds one to the deck.
 class TagSelector extends StatefulWidget {
@@ -174,6 +239,10 @@ class _SelectableTagChip extends StatelessWidget {
   /// The tag's color, or null for the "New tag" chip.
   final Color? color;
   final IconData? icon;
+
+  /// How many cards carry the tag, shown as a trailing number. Null hides
+  /// it (the chip is a card's own tag, not a filter).
+  final int? count;
   final VoidCallback onTap;
 
   const _SelectableTagChip({
@@ -182,6 +251,7 @@ class _SelectableTagChip extends StatelessWidget {
     required this.onTap,
     this.color,
     this.icon,
+    this.count,
   });
 
   @override
@@ -225,6 +295,17 @@ class _SelectableTagChip extends StatelessWidget {
                   fontWeight: FontWeight.w700,
                 ),
               ),
+              if (count != null) ...[
+                const SizedBox(width: 6),
+                Text(
+                  '$count',
+                  style: TextStyle(
+                    color: SprakTheme.inkSoft,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
             ],
           ),
         ),

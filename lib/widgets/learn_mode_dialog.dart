@@ -4,60 +4,104 @@ import '../models.dart';
 import '../screens/quiz_screen.dart';
 import '../storage.dart';
 import '../theme.dart';
+import 'tag_chips.dart';
 
-/// Asks how to study (whole deck / continue / focus on mistakes), how to
-/// answer (multiple choice / typing / both), and which side to be quizzed
-/// on (front / back / both), then opens the quiz. Resuming skips the
-/// follow-up questions — the choices are saved in the session.
+/// Asks which tags to study and how (whole deck / continue / focus on
+/// mistakes), how to answer (multiple choice / typing / both), and which
+/// side to be quizzed on (front / back / both), then opens the quiz.
+/// Resuming skips the follow-up questions — the choices are saved in the
+/// session, whose card set is already fixed, so the tag filter is ignored
+/// there.
+///
+/// [initialTags] seeds the tag filter, so a deck list already narrowed on
+/// screen studies the same slice without picking the tags twice.
 Future<void> startLearning(
-    BuildContext context, DeckStore store, Deck deck) async {
+  BuildContext context,
+  DeckStore store,
+  Deck deck, {
+  List<String> initialTags = const [],
+}) async {
   if (deck.cards.isEmpty) return;
 
+  var tags = deck.keepKnownTags(initialTags);
   final session = deck.session;
   final mode = await showDialog<QuizMode>(
     context: context,
-    builder: (context) => AlertDialog(
-      title: Text('Study “${deck.name}”'),
-      content: SizedBox(
-        width: 420,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _ModeTile(
-              icon: Icons.shuffle,
-              title: 'Whole deck',
-              subtitle: 'Every card, shuffled into groups of six.',
-              onTap: () => Navigator.pop(context, QuizMode.whole),
+    builder: (context) => StatefulBuilder(
+      builder: (context, setState) {
+        final pool = deck.cardsWithAnyTag(tags);
+        final canStart = pool.isNotEmpty;
+        return AlertDialog(
+          title: Text('Study “${deck.name}”'),
+          content: SizedBox(
+            width: 460,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (deck.tags.isNotEmpty) ...[
+                  TagFilterBar(
+                    deck: deck,
+                    selected: tags,
+                    label: 'Study only',
+                    onChanged: (next) => setState(() => tags = next),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    canStart
+                        ? '${pool.length} of ${deck.cards.length} '
+                            '${deck.cards.length == 1 ? "card" : "cards"} '
+                            'selected.'
+                        : 'No cards carry those tags.',
+                    style: TextStyle(
+                      color: canStart
+                          ? SprakTheme.inkSoft
+                          : Theme.of(context).colorScheme.error,
+                      fontSize: 12.5,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                ],
+                _ModeTile(
+                  icon: Icons.shuffle,
+                  title: tags.isEmpty ? 'Whole deck' : 'Every selected card',
+                  subtitle: 'Shuffled into groups of six.',
+                  enabled: canStart,
+                  onTap: () => Navigator.pop(context, QuizMode.whole),
+                ),
+                const SizedBox(height: 10),
+                _ModeTile(
+                  icon: Icons.play_circle_outline,
+                  title: 'Pick up where you left off',
+                  subtitle: session != null
+                      ? 'Continue from group ${session.groupIndex + 1} of '
+                          '${session.groups.length} — the saved session '
+                          'keeps its own cards.'
+                      : 'No session in progress.',
+                  enabled: session != null,
+                  onTap: () => Navigator.pop(context, QuizMode.resume),
+                ),
+                const SizedBox(height: 10),
+                _ModeTile(
+                  icon: Icons.local_fire_department_outlined,
+                  title: 'Focus on mistakes',
+                  subtitle:
+                      'Drill just the hardest slice — the words you miss '
+                      'most and the ones you’ve barely practiced.',
+                  enabled: canStart,
+                  onTap: () => Navigator.pop(context, QuizMode.mistakes),
+                ),
+              ],
             ),
-            const SizedBox(height: 10),
-            _ModeTile(
-              icon: Icons.play_circle_outline,
-              title: 'Pick up where you left off',
-              subtitle: session != null
-                  ? 'Continue from group ${session.groupIndex + 1} of '
-                      '${session.groups.length}.'
-                  : 'No session in progress.',
-              enabled: session != null,
-              onTap: () => Navigator.pop(context, QuizMode.resume),
-            ),
-            const SizedBox(height: 10),
-            _ModeTile(
-              icon: Icons.local_fire_department_outlined,
-              title: 'Focus on mistakes',
-              subtitle:
-                  'Drill just the hardest slice — the words you miss most '
-                  'and the ones you’ve barely practiced.',
-              onTap: () => Navigator.pop(context, QuizMode.mistakes),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
             ),
           ],
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel'),
-        ),
-      ],
+        );
+      },
     ),
   );
 
@@ -260,7 +304,8 @@ Future<void> startLearning(
           style: style!,
           grading: grading,
           direction: direction,
-          mistakeFraction: mistakeFraction),
+          mistakeFraction: mistakeFraction,
+          tags: tags),
     ),
   );
 }

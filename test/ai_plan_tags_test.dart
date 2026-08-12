@@ -18,7 +18,9 @@ void main() {
     final plan = canonicalizePlan(
       deck,
       DeckEditPlan(
-        additions: [(native: 'to run', target: 'springa', tags: ['verb'])],
+        additions: [
+          (native: 'to run', target: 'springa', notes: '', tags: ['verb']),
+        ],
         removals: [],
       ),
     );
@@ -31,7 +33,12 @@ void main() {
       deck,
       DeckEditPlan(
         additions: [
-          (native: 'to run', target: 'springa', tags: ['verb', 'motion']),
+          (
+            native: 'to run',
+            target: 'springa',
+            notes: '',
+            tags: ['verb', 'motion'],
+          ),
         ],
         removals: [],
       ),
@@ -44,7 +51,9 @@ void main() {
     final plan = canonicalizePlan(
       deck,
       DeckEditPlan(
-        additions: [(native: 'to run', target: 'springa', tags: ['VERB'])],
+        additions: [
+          (native: 'to run', target: 'springa', notes: '', tags: ['VERB']),
+        ],
         removals: [],
       ),
     );
@@ -108,6 +117,83 @@ void main() {
       ),
     );
     expect(plan.retags, isEmpty);
+  });
+
+  test('a note edit for an existing card survives', () {
+    final card = CardItem(native: 'to run', target: 'springa');
+    final deck = deckWith([], [card]);
+    final plan = canonicalizePlan(
+      deck,
+      DeckEditPlan(
+        additions: [],
+        removals: [],
+        noteEdits: [(target: 'springa', notes: 'Jag springer varje dag.')],
+      ),
+    );
+    expect(plan.noteEdits.single.notes, 'Jag springer varje dag.');
+  });
+
+  test('a note edit naming no card in the deck is dropped', () {
+    final deck = deckWith([], [CardItem(native: 'red', target: 'röd')]);
+    final plan = canonicalizePlan(
+      deck,
+      DeckEditPlan(
+        additions: [],
+        removals: [],
+        noteEdits: [(target: 'springa', notes: 'anything')],
+      ),
+    );
+    expect(plan.noteEdits, isEmpty);
+    expect(plan.isEmpty, isTrue);
+  });
+
+  test('a note edit that changes nothing is dropped', () {
+    final card =
+        CardItem(native: 'to run', target: 'springa', notes: 'Regular verb.');
+    final deck = deckWith([], [card]);
+    final plan = canonicalizePlan(
+      deck,
+      DeckEditPlan(
+        additions: [],
+        removals: [],
+        noteEdits: [(target: 'springa', notes: 'Regular verb.')],
+      ),
+    );
+    expect(plan.noteEdits, isEmpty);
+  });
+
+  test('clearing a card\'s note is kept as a change', () {
+    final card =
+        CardItem(native: 'to run', target: 'springa', notes: 'Regular verb.');
+    final deck = deckWith([], [card]);
+    final plan = canonicalizePlan(
+      deck,
+      DeckEditPlan(
+        additions: [],
+        removals: [],
+        noteEdits: [(target: 'springa', notes: '')],
+      ),
+    );
+    expect(plan.noteEdits.single.notes, '');
+  });
+
+  test('an added card keeps the note the model wrote', () {
+    final deck = deckWith([], []);
+    final plan = canonicalizePlan(
+      deck,
+      DeckEditPlan(
+        additions: [
+          (
+            native: 'to run',
+            target: 'springa',
+            notes: '  Jag springer varje dag.  ',
+            tags: [],
+          ),
+        ],
+        removals: [],
+      ),
+    );
+    expect(plan.additions.single.notes, 'Jag springer varje dag.');
   });
 
   test('clearing a card\'s tags is kept as a change', () {

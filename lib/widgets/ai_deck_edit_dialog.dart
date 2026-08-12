@@ -4,13 +4,16 @@ import '../models.dart';
 import '../services/claude_service.dart';
 import '../services/llm_service.dart';
 import '../theme.dart';
+import 'card_note.dart';
 import 'tag_chips.dart';
 import 'tex_text.dart';
 
 /// Rewrites [plan] against [deck]'s own tag list before it is reviewed:
 /// model-supplied tags take the deck's spelling, tags the model invented
 /// are dropped, and retags naming no card — or leaving a card's tags as
-/// they already are — fall away.
+/// they already are — fall away. Note edits are filtered the same way:
+/// only ones that name a card in the deck and actually change its note
+/// survive.
 DeckEditPlan canonicalizePlan(Deck deck, DeckEditPlan plan) {
   String norm(String s) => s.trim().toLowerCase();
 
@@ -23,7 +26,7 @@ DeckEditPlan canonicalizePlan(Deck deck, DeckEditPlan plan) {
     return out;
   }
 
-  final retags = <({String target, List<String> tags})>[];
+  final retags = <CardRetag>[];
   for (final r in plan.retags) {
     final tags = clean(r.tags);
     final changes = deck.cards
@@ -33,13 +36,28 @@ DeckEditPlan canonicalizePlan(Deck deck, DeckEditPlan plan) {
     if (changes) retags.add((target: r.target, tags: tags));
   }
 
+  final noteEdits = <CardNoteEdit>[];
+  for (final n in plan.noteEdits) {
+    final notes = n.notes.trim();
+    final changes = deck.cards
+        .where((c) => norm(c.target) == norm(n.target))
+        .any((c) => c.notes != notes);
+    if (changes) noteEdits.add((target: n.target, notes: notes));
+  }
+
   return DeckEditPlan(
     additions: [
       for (final a in plan.additions)
-        (native: a.native, target: a.target, tags: clean(a.tags)),
+        (
+          native: a.native,
+          target: a.target,
+          notes: a.notes.trim(),
+          tags: clean(a.tags),
+        ),
     ],
     removals: plan.removals,
     retags: retags,
+    noteEdits: noteEdits,
   );
 }
 
@@ -63,6 +81,7 @@ class _AiDeckEditDialogState extends State<AiDeckEditDialog> {
   late List<bool> _addSelected;
   late List<bool> _removeSelected;
   late List<bool> _tagSelected;
+  late List<bool> _noteSelected;
 
   @override
   void dispose() {
@@ -90,6 +109,7 @@ class _AiDeckEditDialogState extends State<AiDeckEditDialog> {
             {
               'native': c.native,
               'target': c.target,
+              if (c.notes.isNotEmpty) 'notes': c.notes,
               if (widget.deck.tags.isNotEmpty) 'tags': c.tags,
             },
         ],
@@ -107,6 +127,7 @@ class _AiDeckEditDialogState extends State<AiDeckEditDialog> {
         _addSelected = List.filled(plan.additions.length, true);
         _removeSelected = List.filled(plan.removals.length, true);
         _tagSelected = List.filled(plan.retags.length, true);
+        _noteSelected = List.filled(plan.noteEdits.length, true);
       });
     } on LlmException catch (e) {
       if (!mounted) return;
@@ -132,6 +153,10 @@ class _AiDeckEditDialogState extends State<AiDeckEditDialog> {
         retags: [
           for (var i = 0; i < plan.retags.length; i++)
             if (_tagSelected[i]) plan.retags[i],
+        ],
+        noteEdits: [
+          for (var i = 0; i < plan.noteEdits.length; i++)
+            if (_noteSelected[i]) plan.noteEdits[i],
         ],
       ),
     );
@@ -173,7 +198,8 @@ class _AiDeckEditDialogState extends State<AiDeckEditDialog> {
           FilledButton(
             onPressed: (_addSelected.contains(true) ||
                     _removeSelected.contains(true) ||
-                    _tagSelected.contains(true))
+                    _tagSelected.contains(true) ||
+                    _noteSelected.contains(true))
                 ? _apply
                 : null,
             child: const Text('Apply changes'),
@@ -190,11 +216,12 @@ class _AiDeckEditDialogState extends State<AiDeckEditDialog> {
         Text(
           widget.deck.tags.isEmpty
               ? 'Describe a change to “${widget.deck.name}” and the AI will '
-                  'propose cards to add or remove — you approve before '
-                  'anything is saved.'
+                  'propose cards to add or remove, and notes to explain '
+                  'them — you approve before anything is saved.'
               : 'Describe a change to “${widget.deck.name}” and the AI will '
-                  'propose cards to add or remove, and tags to apply from '
-                  'this set\'s list — you approve before anything is saved.',
+                  'propose cards to add or remove, notes to explain them, '
+                  'and tags to apply from this set\'s list — you approve '
+                  'before anything is saved.',
           style: TextStyle(color: SprakTheme.inkSoft, fontSize: 13),
         ),
         const SizedBox(height: 14),
@@ -218,6 +245,7 @@ class _AiDeckEditDialogState extends State<AiDeckEditDialog> {
               if (widget.deck.tags.isNotEmpty &&
                   widget.deck.cards.isNotEmpty)
                 'Tag every card',
+              if (widget.deck.cards.isNotEmpty) 'Add usage notes',
               ...switch (widget.deck.kind) {
                 DeckKind.language => const [
                     'Numbers 1–10',
@@ -289,6 +317,12 @@ class _AiDeckEditDialogState extends State<AiDeckEditDialog> {
                       TexText(plan.additions[i].native,
                           style: TextStyle(
                               color: SprakTheme.inkSoft, fontSize: 12)),
+                      if (plan.additions[i].notes.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: CardNote(plan.additions[i].notes,
+                              fontSize: 12),
+                        ),
                       if (plan.additions[i].tags.isNotEmpty)
                         Padding(
                           padding: const EdgeInsets.only(top: 4),
@@ -346,6 +380,33 @@ class _AiDeckEditDialogState extends State<AiDeckEditDialog> {
                             style: TextStyle(
                                 color: SprakTheme.inkSoft, fontSize: 12))
                         : TagChips(plan.retags[i].tags),
+                  ),
+                ),
+            ],
+            if (plan.noteEdits.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Text('Update notes on ${plan.noteEdits.length} '
+                  '${plan.noteEdits.length == 1 ? "card" : "cards"}',
+                  style: TextStyle(
+                      fontWeight: FontWeight.w800, color: SprakTheme.fjord)),
+              const SizedBox(height: 4),
+              for (var i = 0; i < plan.noteEdits.length; i++)
+                CheckboxListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  value: _noteSelected[i],
+                  onChanged: (v) =>
+                      setState(() => _noteSelected[i] = v ?? false),
+                  title: TexText(plan.noteEdits[i].target,
+                      style: SprakTheme.vocab(size: 16)),
+                  subtitle: Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: plan.noteEdits[i].notes.isEmpty
+                        ? Text('Clear the note',
+                            style: TextStyle(
+                                color: SprakTheme.inkSoft, fontSize: 12))
+                        : CardNote(plan.noteEdits[i].notes, fontSize: 12),
                   ),
                 ),
             ],

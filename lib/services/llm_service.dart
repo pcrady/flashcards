@@ -26,25 +26,47 @@ const List<LlmProvider> kLlmProviders = [
       keyRequired: false),
 ];
 
+/// A card the model proposes to create.
+typedef CardAddition = ({
+  String native,
+  String target,
+  String notes,
+  List<String> tags,
+});
+
+/// The complete new tag list for one card already in the deck.
+typedef CardRetag = ({String target, List<String> tags});
+
+/// The replacement note for one card already in the deck (empty clears it).
+typedef CardNoteEdit = ({String target, String notes});
+
 /// A reviewed-before-apply set of deck changes proposed by the LLM.
 class DeckEditPlan {
-  final List<({String native, String target, List<String> tags})> additions;
+  final List<CardAddition> additions;
 
   /// Target-language text of existing cards to delete.
   final List<String> removals;
 
   /// Retags for cards already in the deck: the target text of the card and
   /// the complete new tag list it should end up with.
-  final List<({String target, List<String> tags})> retags;
+  final List<CardRetag> retags;
+
+  /// Note rewrites for cards already in the deck.
+  final List<CardNoteEdit> noteEdits;
 
   DeckEditPlan({
     required this.additions,
     required this.removals,
-    List<({String target, List<String> tags})>? retags,
-  }) : retags = retags ?? [];
+    List<CardRetag>? retags,
+    List<CardNoteEdit>? noteEdits,
+  })  : retags = retags ?? [],
+        noteEdits = noteEdits ?? [];
 
   bool get isEmpty =>
-      additions.isEmpty && removals.isEmpty && retags.isEmpty;
+      additions.isEmpty &&
+      removals.isEmpty &&
+      retags.isEmpty &&
+      noteEdits.isEmpty;
 }
 
 /// Dispatches AI requests (tutor chat, translation, deck editing) to
@@ -505,11 +527,14 @@ $nativeLanguage and is learning $targetLanguage.''';
     // from that list and never invents new ones.
     final hasTags = availableTags.isNotEmpty;
     final shape = hasTags
-        ? '{"add": [{"native": "...", "target": "...", "tags": ["..."]}], '
+        ? '{"add": [{"native": "...", "target": "...", "notes": "...", '
+            '"tags": ["..."]}], '
             '"remove": ["...", "..."], '
-            '"tag": [{"target": "...", "tags": ["..."]}]}'
-        : '{"add": [{"native": "...", "target": "..."}], '
-            '"remove": ["...", "..."]}';
+            '"tag": [{"target": "...", "tags": ["..."]}], '
+            '"note": [{"target": "...", "notes": "..."}]}'
+        : '{"add": [{"native": "...", "target": "...", "notes": "..."}], '
+            '"remove": ["...", "..."], '
+            '"note": [{"target": "...", "notes": "..."}]}';
     final tagRules = hasTags
         ? '''
 
@@ -537,7 +562,14 @@ $shape
   periods, no surrounding quotation marks; only punctuation that is
   genuinely part of the word or phrase (e.g. a question mark on an actual
   question).
-- "remove": the exact "target" text of existing cards that should be deleted.$tagRules
+- "remove": the exact "target" text of existing cards that should be deleted.
+- "notes" on an added card: an optional one- or two-sentence note that
+  clarifies the card — a shade of meaning, a usage restriction, a register,
+  or a short example sentence with its translation. It is never asked as an
+  answer. Use "" when the card needs no explanation.
+- "note": note changes for cards ALREADY in the deck. "target" is the exact
+  existing "target" text, and "notes" is the complete replacement note (""
+  clears it). List a card only when its note actually changes.$tagRules
 Use an empty array for whichever does not apply.''';
 
     final reply = await _complete(
@@ -550,14 +582,18 @@ Use an empty array for whichever does not apply.''';
     if (decoded is! Map) {
       throw LlmException('The model did not return a valid change plan.');
     }
-    final additions = <({String native, String target, List<String> tags})>[];
+    final additions = <CardAddition>[];
     for (final a in decoded['add'] as List<dynamic>? ?? []) {
       if (a is Map) {
         final native = (a['native'] as String?)?.trim() ?? '';
         final target = (a['target'] as String?)?.trim() ?? '';
         if (native.isNotEmpty && target.isNotEmpty) {
-          additions.add(
-              (native: native, target: target, tags: _tagList(a['tags'])));
+          additions.add((
+            native: native,
+            target: target,
+            notes: (a['notes'] as String?)?.trim() ?? '',
+            tags: _tagList(a['tags']),
+          ));
         }
       }
     }
@@ -565,7 +601,7 @@ Use an empty array for whichever does not apply.''';
       for (final r in decoded['remove'] as List<dynamic>? ?? [])
         if (r is String && r.trim().isNotEmpty) r.trim(),
     ];
-    final retags = <({String target, List<String> tags})>[];
+    final retags = <CardRetag>[];
     for (final t in decoded['tag'] as List<dynamic>? ?? []) {
       if (t is Map) {
         final target = (t['target'] as String?)?.trim() ?? '';
@@ -574,8 +610,22 @@ Use an empty array for whichever does not apply.''';
         }
       }
     }
+    final noteEdits = <CardNoteEdit>[];
+    for (final n in decoded['note'] as List<dynamic>? ?? []) {
+      if (n is Map) {
+        final target = (n['target'] as String?)?.trim() ?? '';
+        if (target.isNotEmpty) {
+          noteEdits
+              .add((target: target, notes: (n['notes'] as String?)?.trim() ?? ''));
+        }
+      }
+    }
     final plan = DeckEditPlan(
-        additions: additions, removals: removals, retags: retags);
+      additions: additions,
+      removals: removals,
+      retags: retags,
+      noteEdits: noteEdits,
+    );
     if (plan.isEmpty) {
       throw LlmException(
           'The model suggested no changes for that instruction.');

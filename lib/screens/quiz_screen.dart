@@ -11,6 +11,7 @@ import '../services/llm_service.dart';
 import '../services/tts_service.dart';
 import '../storage.dart';
 import '../theme.dart';
+import '../widgets/card_note.dart';
 import '../widgets/chat_box.dart';
 import '../widgets/edit_card_dialog.dart';
 import '../widgets/tex_text.dart';
@@ -58,6 +59,11 @@ class QuizScreen extends StatefulWidget {
   /// modes.
   final double mistakeFraction;
 
+  /// Study only cards carrying at least one of these tags. Empty studies
+  /// the whole deck. A resumed session keeps the cards it was saved with,
+  /// so this does not apply to [QuizMode.resume].
+  final List<String> tags;
+
   const QuizScreen({
     super.key,
     required this.store,
@@ -67,6 +73,7 @@ class QuizScreen extends StatefulWidget {
     this.grading = GradingMode.exact,
     this.direction = QuizDirection.both,
     this.mistakeFraction = 1.0,
+    this.tags = const [],
   });
 
   @override
@@ -218,18 +225,31 @@ class _QuizScreenState extends State<QuizScreen> {
 
   /// The correct answer plus distractors pulled from the rest of the deck
   /// (same side), shuffled. Language decks show 4 options; math/general
-  /// decks show 8.
+  /// decks show 8. Distractors come from the cards being studied first, so
+  /// a tag-filtered session keeps its options in-category, with the rest of
+  /// the deck backfilling when that is not enough to fill the grid.
   List<String> _buildChoices() {
     final optionCount = deck.isLanguage ? 4 : 8;
     final correct = expected;
     final seen = {_normalize(correct)};
-    final pool = <String>[];
-    for (final c in deck.cards) {
-      final option = _askInTarget ? c.native : c.target;
-      if (seen.add(_normalize(option))) pool.add(option);
+    List<String> optionsFrom(Iterable<CardItem> cards) {
+      final out = <String>[];
+      for (final c in cards) {
+        final option = _askInTarget ? c.native : c.target;
+        if (seen.add(_normalize(option))) out.add(option);
+      }
+      return out..shuffle(_random);
     }
-    pool.shuffle(_random);
-    return [correct, ...pool.take(optionCount - 1)]..shuffle(_random);
+
+    final studied = optionsFrom(_pool);
+    // Already-seen options are skipped, so this only adds cards outside
+    // the filter.
+    final rest = optionsFrom(deck.cards);
+    final choices = [correct, ...studied.take(optionCount - 1)];
+    if (choices.length < optionCount) {
+      choices.addAll(rest.take(optionCount - choices.length));
+    }
+    return choices..shuffle(_random);
   }
 
   /// Switches the OS keyboard to the language the answer should be typed
@@ -263,7 +283,23 @@ class _QuizScreenState extends State<QuizScreen> {
   double get _deckProgress =>
       _tasksTotal == 0 ? 0 : _tasksDone / _tasksTotal;
 
-  List<CardItem> _shuffled() => List.of(deck.cards)..shuffle(_random);
+  /// The tags actually narrowing this session — none when resuming (the
+  /// saved session carries its own cards) or when the filter matched no
+  /// card and was dropped.
+  List<String> get _studiedTags {
+    if (widget.mode == QuizMode.resume || widget.tags.isEmpty) return const [];
+    return deck.cardsWithAnyTag(widget.tags).isEmpty ? const [] : widget.tags;
+  }
+
+  /// The cards this session studies: the whole deck, or just the ones
+  /// carrying a filtered tag. Never empty — a filter that matches nothing
+  /// falls back to the deck rather than opening an empty quiz.
+  List<CardItem> get _pool {
+    final filtered = deck.cardsWithAnyTag(widget.tags);
+    return filtered.isEmpty ? List.of(deck.cards) : filtered;
+  }
+
+  List<CardItem> _shuffled() => _pool..shuffle(_random);
 
   /// A card's wrong-to-correct ratio — higher means missed more often
   /// relative to how often it was right. Zero correct answers count as a
@@ -278,7 +314,7 @@ class _QuizScreenState extends State<QuizScreen> {
   /// with enough history; within each tier the wrong:correct ratio decides,
   /// ties broken randomly (shuffled before the sort).
   List<CardItem> _mistakeOrdered() {
-    final all = List.of(deck.cards)..shuffle(_random);
+    final all = _pool..shuffle(_random);
     all.sort((a, b) {
       final aUnknown = a.timesWrong + a.timesCorrect < _kMistakeMinAttempts;
       final bUnknown = b.timesWrong + b.timesCorrect < _kMistakeMinAttempts;
@@ -497,6 +533,7 @@ class _QuizScreenState extends State<QuizScreen> {
     setState(() {
       edited.native = result.native;
       edited.target = result.target;
+      edited.notes = result.notes;
       edited.tags = result.tags;
       // The correct option's text changed with the card — swap it so
       // picking (or highlighting) the right answer still works.
@@ -593,13 +630,35 @@ class _QuizScreenState extends State<QuizScreen> {
           children: [
             Text(deck.emblem, style: const TextStyle(fontSize: 22)),
             const SizedBox(width: 10),
-            Text(deck.name),
+            // The name gives way first when the bar runs out of room.
+            Flexible(
+              child: Text(deck.name, overflow: TextOverflow.ellipsis),
+            ),
             const SizedBox(width: 14),
             Text(
               'Group ${_groupIndex + 1} of ${_groups.length}'
               '  ·  $_tasksDone of $_tasksTotal',
               style: TextStyle(color: SprakTheme.inkSoft, fontSize: 13),
             ),
+            // The tags this session was narrowed to, so a partial deck
+            // never looks like the whole one.
+            if (_studiedTags.isNotEmpty) ...[
+              const SizedBox(width: 14),
+              Icon(Icons.filter_alt_outlined,
+                  size: 15, color: SprakTheme.inkSoft),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  _studiedTags.join(', '),
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: SprakTheme.fjord,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
         bottom: PreferredSize(
@@ -981,6 +1040,10 @@ class _QuizScreenState extends State<QuizScreen> {
                       style: TextStyle(
                           color: SprakTheme.inkSoft, fontSize: 14),
                       selectable: true),
+                ],
+                if (card.notes.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  CardNote(card.notes, fontSize: 14),
                 ],
                 if (!_lastCorrect! && !_isChoice) ...[
                   const SizedBox(height: 6),

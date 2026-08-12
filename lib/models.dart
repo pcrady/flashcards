@@ -76,6 +76,11 @@ class CardItem {
   /// A card can carry any number of them.
   List<String> tags;
 
+  /// Free-form note about the card — a nuance of meaning, an example
+  /// sentence, a mnemonic. Shown when the card is reviewed, never asked
+  /// for as an answer. Empty when the card has none.
+  String notes;
+
   /// First-attempt outcomes, oldest first (retries within a study group
   /// are not recorded).
   final List<CardReview> reviews;
@@ -86,6 +91,7 @@ class CardItem {
     required this.target,
     this.timesCorrect = 0,
     this.timesWrong = 0,
+    this.notes = '',
     List<String>? tags,
     List<CardReview>? reviews,
   })  : id = id ?? _uuid.v4(),
@@ -145,6 +151,7 @@ class CardItem {
         'target': target,
         'timesCorrect': timesCorrect,
         'timesWrong': timesWrong,
+        if (notes.isNotEmpty) 'notes': notes,
         if (tags.isNotEmpty) 'tags': tags,
         if (reviews.isNotEmpty)
           'reviews': reviews.map((r) => r.toJson()).toList(),
@@ -156,6 +163,7 @@ class CardItem {
         target: json['target'] as String? ?? '',
         timesCorrect: json['timesCorrect'] as int? ?? 0,
         timesWrong: json['timesWrong'] as int? ?? 0,
+        notes: json['notes'] as String? ?? '',
         tags: [
           for (final t in json['tags'] as List<dynamic>? ?? []) t as String,
         ],
@@ -461,6 +469,19 @@ class Deck {
       c.tags.remove(tag);
     }
   }
+
+  /// The cards a tag filter selects: every card when [tags] is empty,
+  /// otherwise the cards carrying at least one of them (any, not all).
+  /// Deck order is preserved.
+  List<CardItem> cardsWithAnyTag(List<String> tags) {
+    if (tags.isEmpty) return List.of(cards);
+    return cards.where((c) => tags.any(c.tags.contains)).toList();
+  }
+
+  /// [tags] with anything the deck no longer defines dropped — a filter
+  /// must never outlive a renamed or deleted tag.
+  List<String> keepKnownTags(List<String> tags) =>
+      [for (final t in tags) if (this.tags.contains(t)) t];
 
   /// How many cards carry [name].
   int tagUseCount(String name) {
