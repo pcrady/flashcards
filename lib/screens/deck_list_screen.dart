@@ -45,6 +45,7 @@ class DeckListScreen extends StatelessWidget {
               tooltip: 'New folder',
               onPressed: () => _createFolder(context),
             ),
+          const SkinToggleButton(),
           IconButton(
             icon: const Icon(Icons.settings_outlined),
             tooltip: 'Settings',

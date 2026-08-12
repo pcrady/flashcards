@@ -159,7 +159,7 @@ class _AiDeckEditDialogState extends State<AiDeckEditDialog> {
         if (_plan == null)
           FilledButton.icon(
             icon: _loading
-                ? const SizedBox(
+                ? SizedBox(
                     width: 16,
                     height: 16,
                     child: CircularProgressIndicator(
@@ -269,7 +269,7 @@ class _AiDeckEditDialogState extends State<AiDeckEditDialog> {
             if (plan.additions.isNotEmpty) ...[
               Text('Add ${plan.additions.length} '
                   '${plan.additions.length == 1 ? "card" : "cards"}',
-                  style: const TextStyle(
+                  style: TextStyle(
                       fontWeight: FontWeight.w800,
                       color: SprakTheme.success)),
               const SizedBox(height: 4),
@@ -302,7 +302,7 @@ class _AiDeckEditDialogState extends State<AiDeckEditDialog> {
               const SizedBox(height: 12),
               Text('Remove ${plan.removals.length} '
                   '${plan.removals.length == 1 ? "card" : "cards"}',
-                  style: const TextStyle(
+                  style: TextStyle(
                       fontWeight: FontWeight.w800, color: SprakTheme.danger)),
               const SizedBox(height: 4),
               for (var i = 0; i < plan.removals.length; i++)
@@ -315,7 +315,7 @@ class _AiDeckEditDialogState extends State<AiDeckEditDialog> {
                       setState(() => _removeSelected[i] = v ?? false),
                   title: TexText(
                     plan.removals[i],
-                    style: const TextStyle(
+                    style: TextStyle(
                       decoration: TextDecoration.lineThrough,
                       color: SprakTheme.danger,
                     ),
@@ -326,7 +326,7 @@ class _AiDeckEditDialogState extends State<AiDeckEditDialog> {
               const SizedBox(height: 12),
               Text('Retag ${plan.retags.length} '
                   '${plan.retags.length == 1 ? "card" : "cards"}',
-                  style: const TextStyle(
+                  style: TextStyle(
                       fontWeight: FontWeight.w800, color: SprakTheme.neon)),
               const SizedBox(height: 4),
               for (var i = 0; i < plan.retags.length; i++)

@@ -799,7 +799,7 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                             shape: isDuplicate
                                 ? RoundedRectangleBorder(
                                     borderRadius: BorderRadius.circular(12),
-                                    side: const BorderSide(
+                                    side: BorderSide(
                                         color: SprakTheme.warning, width: 1.5),
                                   )
                                 : null,

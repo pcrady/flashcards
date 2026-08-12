@@ -760,8 +760,8 @@ class _QuizScreenState extends State<QuizScreen> {
           width: bottom ? null : 11,
           decoration: BoxDecoration(
             border: bottom
-                ? const Border(top: BorderSide(color: SprakTheme.line))
-                : const Border(left: BorderSide(color: SprakTheme.line)),
+                ? Border(top: BorderSide(color: SprakTheme.line))
+                : Border(left: BorderSide(color: SprakTheme.line)),
           ),
           child: Center(
             child: Container(
@@ -1250,7 +1250,7 @@ class _QuizScreenState extends State<QuizScreen> {
                   onPressed: () => Navigator.of(context).pop(),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: SprakTheme.ink,
-                    side: const BorderSide(color: SprakTheme.line),
+                    side: BorderSide(color: SprakTheme.line),
                     shape: const StadiumBorder(),
                     padding: const EdgeInsets.symmetric(
                         horizontal: 22, vertical: 16),

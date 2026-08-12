@@ -322,8 +322,8 @@ class _ChatBubble extends StatelessWidget {
           decoration: BoxDecoration(
             color: isUser ? null : SprakTheme.surface,
             gradient: isUser
-                ? const LinearGradient(colors: [
-                    Color(0xFF7B5CF0),
+                ? LinearGradient(colors: [
+                    const Color(0xFF7B5CF0),
                     SprakTheme.magenta,
                   ])
                 : null,

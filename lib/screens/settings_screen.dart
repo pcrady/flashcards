@@ -137,6 +137,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
+                          Text('Appearance',
+                              style: Theme.of(context).textTheme.titleLarge),
+                          const SizedBox(height: 8),
+                          Text(
+                            SprakTheme.skin.value.blurb,
+                            style: TextStyle(
+                                color: SprakTheme.inkSoft, fontSize: 13),
+                          ),
+                          const SizedBox(height: 16),
+                          SegmentedButton<SprakSkin>(
+                            segments: [
+                              for (final s in SprakSkin.values)
+                                ButtonSegment(
+                                  value: s,
+                                  label: Text(s.label),
+                                  icon: Icon(s == SprakSkin.hacker
+                                      ? Icons.terminal
+                                      : Icons.auto_awesome_outlined),
+                                ),
+                            ],
+                            selected: {SprakTheme.skin.value},
+                            onSelectionChanged: (v) =>
+                                SprakTheme.setSkin(v.first),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
                           Text('AI provider',
                               style:
                                   Theme.of(context).textTheme.titleLarge),
