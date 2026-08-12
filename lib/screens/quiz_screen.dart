@@ -145,6 +145,17 @@ class _QuizScreenState extends State<QuizScreen> {
   /// there too after the chat panel has held focus.
   final _clearedFocus = FocusNode();
 
+  /// Whether the target-language side is read aloud on its own — when a
+  /// question shows it, and after every answer. The speaker button next to
+  /// the prompt still plays on demand either way. Remembered across
+  /// sessions, and only offered for language decks.
+  static const _autoSpeakPref = 'auto_speak';
+  bool _autoSpeak = true;
+
+  /// Guards the first question: the saved toggle arrives a frame or two
+  /// after the quiz opens, so nothing is spoken until its value is known.
+  bool _autoSpeakLoaded = false;
+
   Deck get deck => widget.deck;
   List<CardItem> get _group => _groups[_groupIndex];
   _Task get _task => _remaining.first;
@@ -172,7 +183,11 @@ class _QuizScreenState extends State<QuizScreen> {
         _chatWidth = prefs.getDouble(_chatWidthPref) ?? _chatWidth;
         _chatPosition =
             ChatPosition.fromId(prefs.getString(_chatPositionPref));
+        _autoSpeak = prefs.getBool(_autoSpeakPref) ?? _autoSpeak;
+        _autoSpeakLoaded = true;
       });
+      // The first question was already on screen before the toggle loaded.
+      _maybeSpeakPrompt();
     });
     _style = widget.style;
     _gradingMode = widget.grading;
@@ -208,6 +223,54 @@ class _QuizScreenState extends State<QuizScreen> {
     } else {
       _syncKeyboard();
     }
+    _maybeSpeakPrompt();
+  }
+
+  /// Reads the question aloud when auto-play is on. Only the
+  /// target-language side is spoken — a native-side question would be
+  /// giving away the answer it is asking for.
+  void _maybeSpeakPrompt() {
+    if (!_autoSpeak || !_autoSpeakLoaded || !deck.isLanguage) return;
+    if (_phase != _Phase.asking || _remaining.isEmpty || !_askInTarget) return;
+    TtsService().speak(card.target, ttsLocaleFor(deck.targetLanguage));
+  }
+
+  /// The current card's note as speech: the `$…$` LaTeX delimiters are
+  /// dropped so a note that annotates with math isn't read as "dollar".
+  String get _spokenNotes => card.notes
+      .replaceAll(RegExp(r'\$\$?'), ' ')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+
+  /// The current card's note as speech. Notes explain the card in the
+  /// learner's own language but quote the target language inside it, so
+  /// each part gets the voice that can pronounce it.
+  List<Utterance> get _noteUtterances => splitByScript(
+        _spokenNotes,
+        targetLocale: ttsLocaleFor(deck.targetLanguage),
+        nativeLocale: ttsLocaleFor(deck.nativeLanguage),
+      );
+
+  /// Plays the note on demand, the way the speaker beside the question
+  /// plays the word. Only offered on language decks, where the app speaks
+  /// at all.
+  void _speakNotes() {
+    TtsService().speakAll(_noteUtterances);
+    _focusTask();
+  }
+
+  void _setAutoSpeak(bool value) {
+    setState(() => _autoSpeak = value);
+    if (value) {
+      _maybeSpeakPrompt();
+    } else {
+      TtsService().stop();
+    }
+    SharedPreferences.getInstance()
+        .then((prefs) => prefs.setBool(_autoSpeakPref, value));
+    // The toggle lives in the app bar, so clicking it takes focus out of
+    // the quiz; hand it straight back.
+    _focusTask();
   }
 
   /// Focuses the answer surface of whatever is on screen, so Enter (and
@@ -484,9 +547,13 @@ class _QuizScreenState extends State<QuizScreen> {
       }
     });
     widget.store.save();
-    // Always let the learner hear the target-language side.
-    if (deck.isLanguage) {
-      TtsService().speak(card.target, ttsLocaleFor(deck.targetLanguage));
+    // Let the learner hear the target-language side and then the note
+    // shown with it, unless auto-play is switched off.
+    if (deck.isLanguage && _autoSpeak) {
+      TtsService().speakAll([
+        (text: card.target, locale: ttsLocaleFor(deck.targetLanguage)),
+        ..._noteUtterances,
+      ]);
     }
   }
 
@@ -676,6 +743,21 @@ class _QuizScreenState extends State<QuizScreen> {
           ),
         ),
         actions: [
+          if (deck.isLanguage) ...[
+            IconButton(
+              // Filled while on, so it reads as engaged next to the
+              // outlined play-on-demand speaker under it.
+              icon: Icon(
+                  _autoSpeak ? Icons.volume_up : Icons.volume_off_outlined,
+                  size: 20),
+              color: _autoSpeak ? SprakTheme.fjord : SprakTheme.inkSoft,
+              tooltip: _autoSpeak
+                  ? 'Read words aloud automatically: on'
+                  : 'Read words aloud automatically: off',
+              onPressed: () => _setAutoSpeak(!_autoSpeak),
+            ),
+            const SizedBox(width: 4),
+          ],
           if (_phase == _Phase.asking || _phase == _Phase.answered) ...[
             IconButton(
               icon: const Icon(Icons.edit_outlined, size: 20),
@@ -1043,7 +1125,13 @@ class _QuizScreenState extends State<QuizScreen> {
                 ],
                 if (card.notes.isNotEmpty) ...[
                   const SizedBox(height: 10),
-                  CardNote(card.notes, fontSize: 14),
+                  CardNote(
+                    card.notes,
+                    fontSize: 14,
+                    onSpeak: deck.isLanguage && _spokenNotes.isNotEmpty
+                        ? _speakNotes
+                        : null,
+                  ),
                 ],
                 if (!_lastCorrect! && !_isChoice) ...[
                   const SizedBox(height: 6),

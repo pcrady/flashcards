@@ -15,11 +15,16 @@ class CardNote extends StatelessWidget {
   /// clickable sits underneath — see [TexText.selectable].
   final bool selectable;
 
+  /// Reads the note aloud. A speaker button appears at its end when this
+  /// is given; without it the panel is text only.
+  final VoidCallback? onSpeak;
+
   const CardNote(
     this.notes, {
     super.key,
     this.fontSize = 13,
     this.selectable = false,
+    this.onSpeak,
   });
 
   @override
@@ -54,6 +59,21 @@ class CardNote extends StatelessWidget {
               selectable: selectable,
             ),
           ),
+          if (onSpeak != null) ...[
+            const SizedBox(width: 6),
+            IconButton(
+              icon: Icon(Icons.volume_up_outlined, size: fontSize + 4),
+              color: SprakTheme.fjord,
+              tooltip: 'Read the note aloud',
+              // Tight, so the button rides alongside the note instead of
+              // inflating the panel around it.
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: BoxConstraints.tightFor(
+                  width: fontSize + 14, height: fontSize + 14),
+              onPressed: onSpeak,
+            ),
+          ],
         ],
       ),
     );
