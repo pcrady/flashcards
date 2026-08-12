@@ -72,6 +72,10 @@ class CardItem {
   int timesCorrect;
   int timesWrong;
 
+  /// Labels picked from the deck's tag list (e.g. "verb", "adjective").
+  /// A card can carry any number of them.
+  List<String> tags;
+
   /// First-attempt outcomes, oldest first (retries within a study group
   /// are not recorded).
   final List<CardReview> reviews;
@@ -82,8 +86,10 @@ class CardItem {
     required this.target,
     this.timesCorrect = 0,
     this.timesWrong = 0,
+    List<String>? tags,
     List<CardReview>? reviews,
   })  : id = id ?? _uuid.v4(),
+        tags = tags ?? [],
         reviews = reviews ?? [];
 
   /// Reviews less than this far apart belong to one sitting (e.g. both
@@ -139,6 +145,7 @@ class CardItem {
         'target': target,
         'timesCorrect': timesCorrect,
         'timesWrong': timesWrong,
+        if (tags.isNotEmpty) 'tags': tags,
         if (reviews.isNotEmpty)
           'reviews': reviews.map((r) => r.toJson()).toList(),
       };
@@ -149,6 +156,9 @@ class CardItem {
         target: json['target'] as String? ?? '',
         timesCorrect: json['timesCorrect'] as int? ?? 0,
         timesWrong: json['timesWrong'] as int? ?? 0,
+        tags: [
+          for (final t in json['tags'] as List<dynamic>? ?? []) t as String,
+        ],
         reviews: [
           for (final r in json['reviews'] as List<dynamic>? ?? [])
             CardReview.fromJson(r as Map<String, dynamic>),
@@ -325,6 +335,10 @@ class Deck {
   String nativeLanguage;
   final List<CardItem> cards;
 
+  /// The tags cards in this deck may carry, in the order they were
+  /// created. Tags are per-deck — a card can only use one listed here.
+  final List<String> tags;
+
   bool get isLanguage => kind == DeckKind.language;
 
   /// Label for a card's target side ("Russian" / "Front").
@@ -392,6 +406,69 @@ class Deck {
     return cards.any((c) => c != excluding && _dupKey(c) == key);
   }
 
+  static String _tagKey(String name) => name.trim().toLowerCase();
+
+  /// The deck's tag matching [name] ignoring case and surrounding space,
+  /// or null if it has none.
+  String? findTag(String name) {
+    final key = _tagKey(name);
+    for (final t in tags) {
+      if (_tagKey(t) == key) return t;
+    }
+    return null;
+  }
+
+  /// Adds [name] to the deck's tag list unless an equivalent tag already
+  /// exists. Returns the canonical name to store on cards — the existing
+  /// tag when there was one — or null if [name] was blank.
+  String? addTag(String name) {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) return null;
+    final existing = findTag(trimmed);
+    if (existing != null) return existing;
+    tags.add(trimmed);
+    return trimmed;
+  }
+
+  /// Renames a tag on the deck and on every card carrying it. Merges into
+  /// [to] if the deck already has that tag.
+  void renameTag(String from, String to) {
+    final trimmed = to.trim();
+    final old = findTag(from);
+    if (old == null || trimmed.isEmpty || old == trimmed) return;
+    final clash = findTag(trimmed);
+    if (clash != null && clash != old) {
+      // Merging: drop the old name and make sure its cards get the kept one.
+      tags.remove(old);
+      for (final c in cards) {
+        if (c.tags.remove(old) && !c.tags.contains(clash)) c.tags.add(clash);
+      }
+      return;
+    }
+    tags[tags.indexOf(old)] = trimmed;
+    for (final c in cards) {
+      final i = c.tags.indexOf(old);
+      if (i != -1) c.tags[i] = trimmed;
+    }
+  }
+
+  /// Drops a tag from the deck and from every card carrying it.
+  void removeTag(String name) {
+    final tag = findTag(name);
+    if (tag == null) return;
+    tags.remove(tag);
+    for (final c in cards) {
+      c.tags.remove(tag);
+    }
+  }
+
+  /// How many cards carry [name].
+  int tagUseCount(String name) {
+    final tag = findTag(name);
+    if (tag == null) return 0;
+    return cards.where((c) => c.tags.contains(tag)).length;
+  }
+
   Map<Mastery, int> get masteryCounts {
     final counts = {for (final m in Mastery.values) m: 0};
     for (final c in cards) {
@@ -407,10 +484,12 @@ class Deck {
     required this.nativeLanguage,
     this.kind = DeckKind.language,
     List<CardItem>? cards,
+    List<String>? tags,
     this.session,
     this.folderId,
   })  : id = id ?? _uuid.v4(),
-        cards = cards ?? [];
+        cards = cards ?? [],
+        tags = tags ?? [];
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -419,22 +498,36 @@ class Deck {
         'targetLanguage': targetLanguage,
         'nativeLanguage': nativeLanguage,
         'cards': cards.map((c) => c.toJson()).toList(),
+        if (tags.isNotEmpty) 'tags': tags,
         if (session != null) 'session': session!.toJson(),
         if (folderId != null) 'folderId': folderId,
       };
 
-  factory Deck.fromJson(Map<String, dynamic> json) => Deck(
-        id: json['id'] as String?,
-        name: json['name'] as String? ?? 'Untitled',
-        kind: DeckKind.fromId(json['kind'] as String?),
-        targetLanguage: json['targetLanguage'] as String? ?? 'Russian',
-        nativeLanguage: json['nativeLanguage'] as String? ?? 'English',
-        cards: (json['cards'] as List<dynamic>? ?? [])
-            .map((c) => CardItem.fromJson(c as Map<String, dynamic>))
-            .toList(),
-        session: json['session'] != null
-            ? QuizSession.fromJson(json['session'] as Map<String, dynamic>)
-            : null,
-        folderId: json['folderId'] as String?,
-      );
+  factory Deck.fromJson(Map<String, dynamic> json) {
+    final deck = Deck(
+      id: json['id'] as String?,
+      name: json['name'] as String? ?? 'Untitled',
+      kind: DeckKind.fromId(json['kind'] as String?),
+      targetLanguage: json['targetLanguage'] as String? ?? 'Russian',
+      nativeLanguage: json['nativeLanguage'] as String? ?? 'English',
+      cards: (json['cards'] as List<dynamic>? ?? [])
+          .map((c) => CardItem.fromJson(c as Map<String, dynamic>))
+          .toList(),
+      tags: [
+        for (final t in json['tags'] as List<dynamic>? ?? []) t as String,
+      ],
+      session: json['session'] != null
+          ? QuizSession.fromJson(json['session'] as Map<String, dynamic>)
+          : null,
+      folderId: json['folderId'] as String?,
+    );
+    // Cards are the source of truth if the two ever disagree, so a tag
+    // saved on a card always stays pickable.
+    for (final c in deck.cards) {
+      for (final t in c.tags) {
+        deck.addTag(t);
+      }
+    }
+    return deck;
+  }
 }

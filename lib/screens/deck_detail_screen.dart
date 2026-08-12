@@ -10,8 +10,10 @@ import '../theme.dart';
 import '../widgets/ai_deck_edit_dialog.dart';
 import '../widgets/edit_card_dialog.dart';
 import '../widgets/learn_mode_dialog.dart';
+import '../widgets/manage_tags_dialog.dart';
 import '../widgets/mastery.dart';
 import '../widgets/rename_deck_dialog.dart';
+import '../widgets/tag_chips.dart';
 import '../widgets/tex_text.dart';
 
 /// Shows a deck's cards and lets the user add new ones. While typing a word
@@ -42,6 +44,10 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
   bool _translating = false;
   String? _translateError;
   int _requestSeq = 0;
+
+  /// Tags applied to the next card added. Kept between adds, since cards
+  /// of the same kind are usually entered in a run.
+  List<String> _newCardTags = [];
 
   /// Pending suggestions, shown as dropdowns the user must pick (click, or
   /// ↓ then Enter) before they land in the text boxes: when the typed word
@@ -274,7 +280,9 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
     final target = _targetController.text.trim();
     if (native.isEmpty || target.isEmpty) return;
 
-    deck.cards.add(CardItem(native: native, target: target));
+    deck.cards.add(
+      CardItem(native: native, target: target, tags: List.of(_newCardTags)),
+    );
     await widget.store.save();
     _requestSeq++; // invalidate any in-flight translation
     _nativeController.clear();
@@ -289,15 +297,25 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
   }
 
   Future<void> _editCard(CardItem card) async {
-    final result = await showEditCardDialog(
-      context,
-      card: card,
-      nativeLanguage: deck.nativeLabel,
-      targetLanguage: deck.targetLabel,
-    );
-    if (result == null) return;
-    card.native = result.native;
-    card.target = result.target;
+    final result = await showEditCardDialog(context, card: card, deck: deck);
+    if (result != null) {
+      card.native = result.native;
+      card.target = result.target;
+      card.tags = result.tags;
+    }
+    // Even a cancelled edit can have added a tag to the deck.
+    await widget.store.save();
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _manageTags() async {
+    await showManageTagsDialog(context, deck);
+    if (!mounted) return;
+    // Tags the dialog renamed or deleted must not linger on the next card.
+    _newCardTags = [
+      for (final t in _newCardTags)
+        if (deck.tags.contains(t)) t,
+    ];
     await widget.store.save();
     if (mounted) setState(() {});
   }
@@ -371,8 +389,18 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
           _norm(c.target) == _norm(a.target) &&
           _norm(c.native) == _norm(a.native));
       if (!duplicate) {
-        deck.cards.add(CardItem(native: a.native, target: a.target));
+        deck.cards
+            .add(CardItem(native: a.native, target: a.target, tags: a.tags));
         added++;
+      }
+    }
+    var retagged = 0;
+    for (final r in plan.retags) {
+      for (final c in deck.cards) {
+        if (_norm(c.target) == _norm(r.target)) {
+          c.tags = List.of(r.tags);
+          retagged++;
+        }
       }
     }
     await widget.store.save();
@@ -384,7 +412,10 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
           if (added > 0) 'Added $added ${added == 1 ? "card" : "cards"}',
           if (removed > 0)
             'removed $removed ${removed == 1 ? "card" : "cards"}',
-          if (added == 0 && removed == 0) 'No changes applied',
+          if (retagged > 0)
+            'retagged $retagged ${retagged == 1 ? "card" : "cards"}',
+          if (added == 0 && removed == 0 && retagged == 0)
+            'No changes applied',
         ].join(', ')),
       ),
     );
@@ -507,6 +538,12 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
         ),
         actions: [
           FilledButton.tonalIcon(
+            icon: const Icon(Icons.sell_outlined, size: 18),
+            label: const Text('Tags'),
+            onPressed: _manageTags,
+          ),
+          const SizedBox(width: 10),
+          FilledButton.tonalIcon(
             icon: const Icon(Icons.auto_awesome, size: 18),
             label: const Text('Edit with AI'),
             onPressed: _openAiEdit,
@@ -589,6 +626,27 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                                 icon: const Icon(Icons.add),
                                 label: const Text('Add'),
                                 onPressed: _addCard,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 14),
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: [
+                            Icon(Icons.sell_outlined,
+                                size: 16, color: SprakTheme.inkSoft),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: TagSelector(
+                                deck: deck,
+                                selected: _newCardTags,
+                                onChanged: (next) =>
+                                    setState(() => _newCardTags = next),
+                                onTagCreated: () {
+                                  widget.store.save();
+                                  setState(() {});
+                                },
                               ),
                             ),
                           ],
@@ -804,9 +862,21 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                               ),
                               subtitle: Padding(
                                 padding: const EdgeInsets.only(top: 2),
-                                child: TexText(card.native,
-                                    style:
-                                        TextStyle(color: SprakTheme.inkSoft)),
+                                child: Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.start,
+                                  children: [
+                                    TexText(card.native,
+                                        style: TextStyle(
+                                            color: SprakTheme.inkSoft)),
+                                    if (card.tags.isNotEmpty)
+                                      Padding(
+                                        padding:
+                                            const EdgeInsets.only(top: 6),
+                                        child: TagChips(card.tags),
+                                      ),
+                                  ],
+                                ),
                               ),
                               trailing: Row(
                                 mainAxisSize: MainAxisSize.min,

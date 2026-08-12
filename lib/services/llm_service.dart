@@ -28,11 +28,23 @@ const List<LlmProvider> kLlmProviders = [
 
 /// A reviewed-before-apply set of deck changes proposed by the LLM.
 class DeckEditPlan {
-  final List<({String native, String target})> additions;
+  final List<({String native, String target, List<String> tags})> additions;
 
   /// Target-language text of existing cards to delete.
   final List<String> removals;
-  DeckEditPlan({required this.additions, required this.removals});
+
+  /// Retags for cards already in the deck: the target text of the card and
+  /// the complete new tag list it should end up with.
+  final List<({String target, List<String> tags})> retags;
+
+  DeckEditPlan({
+    required this.additions,
+    required this.removals,
+    List<({String target, List<String> tags})>? retags,
+  }) : retags = retags ?? [];
+
+  bool get isEmpty =>
+      additions.isEmpty && removals.isEmpty && retags.isEmpty;
 }
 
 /// Dispatches AI requests (tutor chat, translation, deck editing) to
@@ -470,7 +482,8 @@ exactly this shape:
     required String targetLanguage,
     required String nativeLanguage,
     String? subject,
-    required List<Map<String, String>> existingCards,
+    required List<Map<String, dynamic>> existingCards,
+    List<String> availableTags = const [],
   }) async {
     final intro = subject != null
         ? '''
@@ -488,6 +501,27 @@ $nativeLanguage and is learning $targetLanguage.''';
             '(a bare concept, term, or expression — not a question).'
         : '"native" is the $nativeLanguage side, "target" is the '
             '$targetLanguage side.';
+    // Tagging is only offered when the deck defines tags — the model picks
+    // from that list and never invents new ones.
+    final hasTags = availableTags.isNotEmpty;
+    final shape = hasTags
+        ? '{"add": [{"native": "...", "target": "...", "tags": ["..."]}], '
+            '"remove": ["...", "..."], '
+            '"tag": [{"target": "...", "tags": ["..."]}]}'
+        : '{"add": [{"native": "...", "target": "..."}], '
+            '"remove": ["...", "..."]}';
+    final tagRules = hasTags
+        ? '''
+
+This deck's cards can be labelled with these tags, and only these:
+${jsonEncode(availableTags)}
+- "tags" on an added card: the tags that apply to it, copied exactly from
+  the list above. Use an empty array when none fit. Never invent a tag.
+- "tag": tag changes for cards ALREADY in the deck. "target" is the exact
+  existing "target" text, and "tags" is the complete new tag list for that
+  card — include the tags it already has and should keep. List a card only
+  when its tags actually change.'''
+        : '';
     final system = '''
 $intro
 
@@ -496,14 +530,14 @@ ${jsonEncode(existingCards)}
 
 The user gives an instruction describing changes to make. Respond with ONLY a
 JSON object — no markdown fences, no commentary — in exactly this shape:
-{"add": [{"native": "...", "target": "..."}], "remove": ["...", "..."]}
+$shape
 
 - "add": new cards to create. $sides Do not duplicate cards already in the
   deck. Do not add unnecessary punctuation to card text — no trailing
   periods, no surrounding quotation marks; only punctuation that is
   genuinely part of the word or phrase (e.g. a question mark on an actual
   question).
-- "remove": the exact "target" text of existing cards that should be deleted.
+- "remove": the exact "target" text of existing cards that should be deleted.$tagRules
 Use an empty array for whichever does not apply.''';
 
     final reply = await _complete(
@@ -516,13 +550,14 @@ Use an empty array for whichever does not apply.''';
     if (decoded is! Map) {
       throw LlmException('The model did not return a valid change plan.');
     }
-    final additions = <({String native, String target})>[];
+    final additions = <({String native, String target, List<String> tags})>[];
     for (final a in decoded['add'] as List<dynamic>? ?? []) {
       if (a is Map) {
         final native = (a['native'] as String?)?.trim() ?? '';
         final target = (a['target'] as String?)?.trim() ?? '';
         if (native.isNotEmpty && target.isNotEmpty) {
-          additions.add((native: native, target: target));
+          additions.add(
+              (native: native, target: target, tags: _tagList(a['tags'])));
         }
       }
     }
@@ -530,12 +565,30 @@ Use an empty array for whichever does not apply.''';
       for (final r in decoded['remove'] as List<dynamic>? ?? [])
         if (r is String && r.trim().isNotEmpty) r.trim(),
     ];
-    if (additions.isEmpty && removals.isEmpty) {
+    final retags = <({String target, List<String> tags})>[];
+    for (final t in decoded['tag'] as List<dynamic>? ?? []) {
+      if (t is Map) {
+        final target = (t['target'] as String?)?.trim() ?? '';
+        if (target.isNotEmpty) {
+          retags.add((target: target, tags: _tagList(t['tags'])));
+        }
+      }
+    }
+    final plan = DeckEditPlan(
+        additions: additions, removals: removals, retags: retags);
+    if (plan.isEmpty) {
       throw LlmException(
           'The model suggested no changes for that instruction.');
     }
-    return DeckEditPlan(additions: additions, removals: removals);
+    return plan;
   }
+
+  /// The non-empty strings out of a model-supplied "tags" value.
+  static List<String> _tagList(dynamic raw) => [
+        if (raw is List)
+          for (final t in raw)
+            if (t is String && t.trim().isNotEmpty) t.trim(),
+      ];
 
   /// Pulls the first JSON object out of a model reply, tolerating markdown
   /// fences and surrounding prose.

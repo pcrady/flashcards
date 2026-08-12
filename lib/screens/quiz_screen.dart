@@ -484,13 +484,20 @@ class _QuizScreenState extends State<QuizScreen> {
     final result = await showEditCardDialog(
       context,
       card: edited,
-      nativeLanguage: deck.nativeLabel,
-      targetLanguage: deck.targetLabel,
+      deck: deck,
     );
-    if (result == null || !mounted) return;
+    if (!mounted) return;
+    if (result == null) {
+      // Nothing changed on the card, but the dialog may have added a tag
+      // to the deck.
+      await widget.store.save();
+      _focusTask();
+      return;
+    }
     setState(() {
       edited.native = result.native;
       edited.target = result.target;
+      edited.tags = result.tags;
       // The correct option's text changed with the card — swap it so
       // picking (or highlighting) the right answer still works.
       if (_isChoice) {

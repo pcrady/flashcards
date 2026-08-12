@@ -24,6 +24,34 @@ class SprakTheme {
   static const Color warning = Color(0xFFF5C542);
   static const Color onFjord = Color(0xFF04231A); // text on mint
 
+  /// Label colors for tags — distinct hues that all read on the dark
+  /// surfaces. Order matters: it is baked into which tag gets which color,
+  /// so append rather than reorder.
+  static const List<Color> tagPalette = [
+    Color(0xFF5AA9FF), // blue
+    Color(0xFF2BE4A2), // mint
+    Color(0xFFB95CF4), // violet
+    Color(0xFFF0509E), // magenta
+    Color(0xFFF5C542), // amber
+    Color(0xFFFF8A5B), // coral
+    Color(0xFF4FD8E8), // cyan
+    Color(0xFFA8E05F), // lime
+    Color(0xFF8E9CFF), // periwinkle
+    Color(0xFFFF6B7A), // rose
+  ];
+
+  /// The color for a tag, derived from its spelling alone, so "verb" looks
+  /// the same in every deck and on every machine. Case and surrounding
+  /// space are ignored. Deliberately not [String.hashCode], which Dart
+  /// does not promise to keep stable between runs.
+  static Color tagColor(String tag) {
+    var hash = 0;
+    for (final unit in tag.trim().toLowerCase().codeUnits) {
+      hash = (hash * 31 + unit) & 0x7FFFFFFF;
+    }
+    return tagPalette[hash % tagPalette.length];
+  }
+
   static const LinearGradient aurora = LinearGradient(
     colors: [fjord, Color(0xFF4EA8F5), neon, magenta],
     begin: Alignment.centerLeft,
