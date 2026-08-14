@@ -229,9 +229,20 @@ class _QuizScreenState extends State<QuizScreen> {
   /// Reads the question aloud when auto-play is on. Only the
   /// target-language side is spoken — a native-side question would be
   /// giving away the answer it is asking for.
+  ///
+  /// When there is nothing to read, whatever is still being said is cut
+  /// off: moving on to the next card leaves the last one's word and note
+  /// mid-sentence, and the learner has moved on.
   void _maybeSpeakPrompt() {
-    if (!_autoSpeak || !_autoSpeakLoaded || !deck.isLanguage) return;
-    if (_phase != _Phase.asking || _remaining.isEmpty || !_askInTarget) return;
+    if (!_autoSpeak ||
+        !_autoSpeakLoaded ||
+        !deck.isLanguage ||
+        _phase != _Phase.asking ||
+        _remaining.isEmpty ||
+        !_askInTarget) {
+      TtsService().stop();
+      return;
+    }
     TtsService().speak(card.target, ttsLocaleFor(deck.targetLanguage));
   }
 
@@ -242,10 +253,10 @@ class _QuizScreenState extends State<QuizScreen> {
       .replaceAll(RegExp(r'\s+'), ' ')
       .trim();
 
-  /// The current card's note as speech. Notes explain the card in the
-  /// learner's own language but quote the target language inside it, so
-  /// each part gets the voice that can pronounce it.
-  List<Utterance> get _noteUtterances => splitByScript(
+  /// The current card's note as speech: only the target-language words
+  /// inside it, since the explanation around them is in a language the
+  /// learner already has. Empty when the note quotes nothing.
+  List<Utterance> get _noteUtterances => targetRuns(
         _spokenNotes,
         targetLocale: ttsLocaleFor(deck.targetLanguage),
         nativeLocale: ttsLocaleFor(deck.nativeLanguage),
@@ -635,6 +646,8 @@ class _QuizScreenState extends State<QuizScreen> {
         _persistSession(clear: true);
       }
       widget.store.save();
+      // The cleared screen replaces the card that was being read.
+      TtsService().stop();
       setState(() {
         _phase = deckDone ? _Phase.deckCleared : _Phase.groupCleared;
         _lastCorrect = null;
@@ -997,6 +1010,18 @@ class _QuizScreenState extends State<QuizScreen> {
                     .speak(card.target, ttsLocaleFor(deck.targetLanguage)),
               ),
             ],
+            // Editing where the learner is already looking — a typo in the
+            // card is usually spotted while reading the question, not while
+            // scanning the app bar (which carries the same action).
+            const SizedBox(width: 4),
+            IconButton(
+              icon: const Icon(Icons.edit_outlined, size: 22),
+              color: SprakTheme.inkSoft,
+              tooltip: 'Edit this card',
+              // Frozen while an AI grade is in flight — editing would
+              // change the expected answer mid-check.
+              onPressed: _aiChecking ? null : _editCurrentCard,
+            ),
           ],
         ),
         const SizedBox(height: 30),
@@ -1128,7 +1153,7 @@ class _QuizScreenState extends State<QuizScreen> {
                   CardNote(
                     card.notes,
                     fontSize: 14,
-                    onSpeak: deck.isLanguage && _spokenNotes.isNotEmpty
+                    onSpeak: deck.isLanguage && _noteUtterances.isNotEmpty
                         ? _speakNotes
                         : null,
                   ),

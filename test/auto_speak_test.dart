@@ -16,6 +16,16 @@ Deck _deck({String notes = ''}) => Deck(
       cards: [CardItem(target: 'hund', native: 'dog', notes: notes)],
     );
 
+/// A deck whose target language is written in another script, so the
+/// target-language words in a note can be told from the English around
+/// them.
+Deck _russian(String notes) => Deck(
+      name: 'Русский',
+      targetLanguage: 'Russian',
+      nativeLanguage: 'English',
+      cards: [CardItem(target: 'собака', native: 'dog', notes: notes)],
+    );
+
 Widget _app(Deck deck) => MaterialApp(
       theme: SprakTheme.dark(),
       home: QuizScreen(
@@ -39,13 +49,18 @@ void main() {
   // utterance was set to.
   final spoken = <String>[];
   final locales = <String>[];
+  // Every call the engine got, so silencing (a bare "stop") is visible
+  // too, not just speech.
+  final calls = <String>[];
 
   setUp(() {
     spoken.clear();
     locales.clear();
+    calls.clear();
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(const MethodChannel('flutter_tts'),
             (call) async {
+      calls.add(call.method);
       if (call.method == 'speak') spoken.add(call.arguments as String);
       if (call.method == 'setLanguage') locales.add(call.arguments as String);
       return 1;
@@ -119,20 +134,10 @@ void main() {
     expect(locales, ['nb-NO', 'en-US']);
   });
 
-  testWidgets('a note quoting the target language switches voices mid-note',
+  testWidgets('only the target-language words of a note are read',
       (tester) async {
     SharedPreferences.setMockInitialValues({});
-    final deck = Deck(
-      name: 'Русский',
-      targetLanguage: 'Russian',
-      nativeLanguage: 'English',
-      cards: [
-        CardItem(
-            target: 'собака',
-            native: 'dog',
-            notes: 'Any breed; пёс is the male one.'),
-      ],
-    );
+    final deck = _russian('Any breed; пёс is the male one.');
     await tester.pumpWidget(MaterialApp(
       theme: SprakTheme.dark(),
       home: QuizScreen(
@@ -150,10 +155,40 @@ void main() {
     await tester.testTextInput.receiveAction(TextInputAction.done);
     await tester.pumpAndSettle();
 
-    // The Cyrillic inside the note is spoken by the Russian voice instead
-    // of the English one stumbling over it.
-    expect(spoken, ['собака', 'Any breed;', 'пёс', 'is the male one.']);
-    expect(locales, ['ru-RU', 'en-US', 'ru-RU', 'en-US']);
+    // The English explanation around the Cyrillic is skipped: the learner
+    // hears the word and the note's Russian, nothing they already know.
+    expect(spoken, ['собака', 'пёс']);
+    expect(locales, ['ru-RU', 'ru-RU']);
+  });
+
+  testWidgets('a note with no target language in it has no speaker',
+      (tester) async {
+    SharedPreferences.setMockInitialValues({'auto_speak': false});
+    final deck = _russian('Any breed, big or small.');
+    await tester.pumpWidget(MaterialApp(
+      theme: SprakTheme.dark(),
+      home: QuizScreen(
+          store: DeckStore(), deck: deck, direction: QuizDirection.front),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find.ancestor(
+          of: find.text('English'), matching: find.byType(TextField)),
+      'dog',
+    );
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pumpAndSettle();
+
+    // The note is still shown — there is just nothing in it to hear.
+    expect(find.byType(CardNote), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(CardNote),
+        matching: find.byIcon(Icons.volume_up_outlined),
+      ),
+      findsNothing,
+    );
   });
 
   testWidgets('the note has its own speaker button', (tester) async {
@@ -191,6 +226,52 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(CardNote), findsNothing);
+  });
+
+  testWidgets('moving to the next card cuts off the last one being read',
+      (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    // A taller window, so the Next button sits clear of the tutor chat
+    // panel and can be clicked.
+    tester.view.physicalSize = const Size(1000, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final deck = Deck(
+      name: 'Norsk',
+      targetLanguage: 'Norwegian',
+      nativeLanguage: 'English',
+      cards: [
+        CardItem(target: 'hund', native: 'dog', notes: 'A long note to read.'),
+        CardItem(target: 'katt', native: 'cat'),
+      ],
+    );
+    await tester.pumpWidget(MaterialApp(
+      theme: SprakTheme.dark(),
+      home: QuizScreen(
+        store: DeckStore(),
+        deck: deck,
+        // Questions show the English side, so no new question is read
+        // over the answer still being spoken.
+        direction: QuizDirection.back,
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    final field = find.ancestor(
+        of: find.text('Norwegian'), matching: find.byType(TextField));
+    await tester.enterText(field, 'hund');
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pumpAndSettle();
+    // The answer plays the word and its note.
+    expect(spoken, isNotEmpty);
+    calls.clear();
+
+    // Moving on silences the card that was talking, and the new question
+    // — asked in English — is not read.
+    await tester.tap(find.text('Next  ⏎'));
+    await tester.pumpAndSettle();
+    expect(calls, contains('stop'));
+    expect(calls, isNot(contains('speak')));
   });
 
   testWidgets('the speaker button still plays on demand with auto-play off',

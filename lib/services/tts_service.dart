@@ -79,6 +79,28 @@ List<Utterance> splitByScript(
   return runs;
 }
 
+/// Only the parts of [text] written in the target language — what a note
+/// is worth hearing. A note explains a card in the learner's own language
+/// and quotes the language being studied inside it, and it is the quoted
+/// words that are practice; the explanation around them is not.
+///
+/// A Latin-script target (Norwegian, Spanish…) shares its alphabet with
+/// the learner's language, so its words can't be picked out of the note.
+/// There the whole note is read rather than none of it.
+List<Utterance> targetRuns(
+  String text, {
+  required String targetLocale,
+  required String nativeLocale,
+}) {
+  final runs = splitByScript(
+    text,
+    targetLocale: targetLocale,
+    nativeLocale: nativeLocale,
+  );
+  if (!_scriptPatterns.containsKey(targetLocale.split('-').first)) return runs;
+  return runs.where((u) => u.locale == targetLocale).toList();
+}
+
 /// Thin wrapper around flutter_tts for speaking words in the deck's
 /// target language.
 class TtsService {

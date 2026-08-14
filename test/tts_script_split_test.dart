@@ -52,6 +52,39 @@ void main() {
     expect(split('   '), isEmpty);
   });
 
+  group('targetRuns keeps only the language being studied', () {
+    List<Utterance> target(String text,
+            {String target = 'ru-RU', String native = 'en-US'}) =>
+        targetRuns(text, targetLocale: target, nativeLocale: native);
+
+    test('the learner\'s own language is left unspoken', () {
+      expect(target('собака — dog, any breed'),
+          [(text: 'собака —', locale: 'ru-RU')]);
+      expect(
+        target('Formal: вы. Informal: ты.'),
+        [(text: 'вы.', locale: 'ru-RU'), (text: 'ты.', locale: 'ru-RU')],
+      );
+    });
+
+    test('a note quoting nothing is not read at all', () {
+      expect(target('Used only in writing.'), isEmpty);
+    });
+
+    test('a note entirely in the target language is read whole', () {
+      expect(target('Пишется только так'),
+          [(text: 'Пишется только так', locale: 'ru-RU')]);
+    });
+
+    test('a Latin-script target falls back to reading the whole note', () {
+      // Norwegian words can't be picked out of English ones, so the note is
+      // read entire rather than not at all.
+      expect(
+        target('hunden means the dog', target: 'nb-NO'),
+        [(text: 'hunden means the dog', locale: 'en-US')],
+      );
+    });
+  });
+
   test('other non-Latin scripts split too', () {
     expect(
       splitByScript('犬 means dog',
