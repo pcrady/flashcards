@@ -26,6 +26,19 @@ const List<LlmProvider> kLlmProviders = [
       keyRequired: false),
 ];
 
+/// What the add-card flow's AI pass proposes for one typed word: the
+/// dictionary form of an inflected input (null when there is nothing to
+/// correct, and always for non-language decks), the text for the card's
+/// other side, the tags that fit the card — which may include labels the
+/// deck does not define yet — and, out of the tags already sitting on the
+/// card being typed, the ones that are wrong for it.
+typedef CardSuggestion = ({
+  String? baseForm,
+  String otherSide,
+  List<String> tags,
+  List<String> removeTags,
+});
+
 /// A card the model proposes to create.
 typedef CardAddition = ({
   String native,
@@ -90,26 +103,142 @@ class LlmService {
   }
 
   /// Completes the other side of a math/general flashcard: given the
-  /// question, produce the answer, or vice versa.
-  static Future<String> completeCard({
+  /// question, produce the answer, or vice versa, plus the tags that suit
+  /// the finished card.
+  static Future<CardSuggestion> completeCard({
     required String text,
     required bool fromQuestion,
     required String subject,
-  }) {
+    List<String> existingTags = const [],
+    List<String> appliedTags = const [],
+  }) async {
     final from = fromQuestion ? 'prompt' : 'answer';
     final to = fromQuestion ? 'answer' : 'prompt';
-    return _complete(
-      system: 'You complete flashcards for studying '
-          '${subject.toLowerCase()}. The user sends the $from side of a '
-          'card; respond with ONLY the text of the $to side — short, no '
-          'explanations, and no unnecessary punctuation such as a trailing '
-          'period or surrounding quotes. A prompt side is a bare concept, '
-          'term, or expression ("Coulomb\'s law"), never phrased as a '
-          'question. Inline LaTeX between \$ signs is rendered, so use it '
-          'for mathematical notation.',
+    final system = '''
+You complete flashcards for studying ${subject.toLowerCase()}. The user
+sends the $from side of a card.
+
+Respond with ONLY a JSON object — no markdown fences, no commentary — in
+exactly this shape:
+{"$to": "...", "tags": ["..."]${_removeShape(appliedTags)}}
+
+- "$to": the text of the $to side — short, no explanations, and no
+  unnecessary punctuation such as a trailing period or surrounding quotes.
+  A prompt side is a bare concept, term, or expression ("Coulomb's law"),
+  never phrased as a question. Inline LaTeX between \$ signs is rendered,
+  so use it for mathematical notation, with backslashes escaped for JSON
+  ("\$\\\\frac{a}{b}\$").
+${_tagRules(existingTags, appliedTags)}''';
+
+    final reply = await _complete(
+      system: system,
       history: [ChatMessage('user', text)],
       maxTokens: 512,
     );
+
+    // A model that answered in plain prose (easy to slip into when the
+    // answer is one LaTeX expression) is still perfectly usable — take the
+    // whole reply as the completion and skip the tags.
+    Map<dynamic, dynamic>? decoded;
+    try {
+      final json = _extractJson(reply);
+      if (json is Map) decoded = json;
+    } on LlmException {
+      decoded = null;
+    }
+    if (decoded == null) {
+      final plain = reply.trim();
+      if (plain.isEmpty) {
+        throw LlmException('The model did not return a suggestion.');
+      }
+      return (
+        baseForm: null,
+        otherSide: plain,
+        tags: const <String>[],
+        removeTags: const <String>[],
+      );
+    }
+    final otherSide = (decoded[to] as String?)?.trim() ?? '';
+    if (otherSide.isEmpty) {
+      throw LlmException('The model did not return a suggestion.');
+    }
+    final tags = _tagList(decoded['tags']);
+    return (
+      baseForm: null,
+      otherSide: otherSide,
+      tags: tags,
+      removeTags: _removals(decoded['remove'], appliedTags, tags),
+    );
+  }
+
+  /// The shared "tags" instructions for the add-card suggestions. Unlike
+  /// [editDeck], which may only pick from the deck's list, this flow lets
+  /// the model coin a label — the deck gains it when the user accepts the
+  /// suggestion.
+  ///
+  /// [appliedTags] are the tags already sitting on the card being typed.
+  /// They carry over from the previously added card, so some of them can
+  /// be plain wrong for this one (a "noun" left over from a run of nouns
+  /// on a card that turns out to be an adjective); the model reports those
+  /// in "remove".
+  static String _tagRules(
+    List<String> existingTags,
+    List<String> appliedTags,
+  ) {
+    final known = existingTags.isEmpty
+        ? 'The deck defines no tags yet, so any tag you use will be a new '
+            'one.'
+        : 'Tags this deck already uses, to be reused verbatim (matching '
+            'their capitalization) whenever one of them fits: '
+            '${jsonEncode(existingTags)}.';
+    final removeRule = appliedTags.isEmpty
+        ? ''
+        : '''
+- "remove": which of the tags already on this card, ${jsonEncode(appliedTags)},
+  are wrong for it. They were carried over from the card added before this
+  one, so a category label may contradict this card — a part-of-speech tag
+  for a different part of speech, a topic the card has nothing to do with.
+  List those, copied verbatim from that array. Leave alone every tag that
+  still fits and every tag you cannot judge from the card alone (a lesson,
+  chapter, or difficulty label), and never list a tag you also put in
+  "tags". Use an empty array when they all still fit.''';
+    return '''
+- "tags": the labels that classify this card so it can be filtered and
+  studied by category — part of speech, topic, register, difficulty, and
+  the like. $known
+  Coin a new tag only when no existing one fits and the label is general
+  enough that other cards in the deck would share it — never something
+  specific to this one card. Prefer one or two tags, never more than
+  three, and use an empty array when nothing clearly applies. Judge this
+  card on its own — do not carry over a label just because it is already
+  there.$removeRule''';
+  }
+
+  /// The `"remove"` field of the JSON shape, present only when there are
+  /// [appliedTags] for the model to judge.
+  static String _removeShape(List<String> appliedTags) =>
+      appliedTags.isEmpty ? '' : ', "remove": ["..."]';
+
+  /// The model's "remove" list, kept to tags actually on the card (in the
+  /// card's own spelling) and never to one it simultaneously suggested.
+  static List<String> _removals(
+    dynamic raw,
+    List<String> appliedTags,
+    List<String> suggested,
+  ) {
+    final removals = <String>[];
+    for (final name in _tagList(raw)) {
+      final match = appliedTags.firstWhere(
+        (t) => t.toLowerCase() == name.toLowerCase(),
+        orElse: () => '',
+      );
+      if (match.isEmpty || removals.contains(match)) continue;
+      if (suggested.any((t) => t.toLowerCase() == match.toLowerCase())) {
+        continue;
+      }
+      removals.add(match);
+    }
+    return removals;
   }
 
   /// Judges whether a typed [answer] is equivalent to the [expected] one
@@ -390,12 +519,16 @@ class LlmService {
   }
 
   /// Analyzes [text] (a word or phrase in [from]) for the add-card flow:
-  /// returns its basic dictionary form when the input is inflected
-  /// (null when it already is the dictionary form) and its [to] translation.
-  static Future<({String? baseForm, String translation})> suggestCard({
+  /// returns its basic dictionary form when the input is inflected (null
+  /// when it already is the dictionary form), its [to] translation, and the
+  /// tags that fit the card. [existingTags] are the deck's current tags,
+  /// which the model reuses when one applies.
+  static Future<CardSuggestion> suggestCard({
     required String text,
     required String from,
     required String to,
+    List<String> existingTags = const [],
+    List<String> appliedTags = const [],
   }) async {
     final system = '''
 You help build flashcards for a language-learning app. The user sends one
@@ -403,7 +536,7 @@ word or short phrase in $from.
 
 Respond with ONLY a JSON object — no markdown fences, no commentary — in
 exactly this shape:
-{"base_form": "..." or null, "translation": "..."}
+{"base_form": "..." or null, "translation": "...", "tags": ["..."]${_removeShape(appliedTags)}}
 
 - "base_form": if the input is an inflected form (a conjugated verb, a
   plural or declined noun, a comparative/superlative adjective, etc.), the
@@ -413,7 +546,8 @@ exactly this shape:
 - "translation": the $to translation of the base form when there is one,
   otherwise of the input as given. Only the translation — no explanations,
   no quotes, no transliteration, and no unnecessary punctuation such as a
-  trailing period.''';
+  trailing period.
+${_tagRules(existingTags, appliedTags)}''';
 
     final reply = await _complete(
       system: system,
@@ -437,7 +571,13 @@ exactly this shape:
         baseForm.toLowerCase() == text.trim().toLowerCase()) {
       baseForm = null;
     }
-    return (baseForm: baseForm, translation: translation);
+    final tags = _tagList(decoded['tags']);
+    return (
+      baseForm: baseForm,
+      otherSide: translation,
+      tags: tags,
+      removeTags: _removals(decoded['remove'], appliedTags, tags),
+    );
   }
 
   /// Runs one completion against whichever provider is configured.

@@ -31,6 +31,71 @@ class DeckDetailScreen extends StatefulWidget {
 
 enum _SortMode { added, mostMissed }
 
+/// The tags a model proposed for a card being added, reduced to what is
+/// worth showing: blanks and repeats go, a tag the deck already defines
+/// takes the deck's own spelling, and anything [alreadyApplied] to the card
+/// is dropped. Tags the deck has never seen are kept — accepting them adds
+/// them to the deck.
+List<String> pendingCardTags(
+  Deck deck,
+  List<String> suggested,
+  List<String> alreadyApplied,
+) {
+  final pending = <String>[];
+  for (final raw in suggested) {
+    final name = deck.findTag(raw) ?? raw.trim();
+    if (name.isEmpty || alreadyApplied.contains(name)) continue;
+    if (pending.any((t) => t.toLowerCase() == name.toLowerCase())) continue;
+    pending.add(name);
+  }
+  return pending;
+}
+
+/// The carried-over tags the model reported as wrong for the card being
+/// added, kept to the ones actually on it (in the card's own spelling) and
+/// never to one the model also proposed.
+List<String> staleCardTags(
+  List<String> flagged,
+  List<String> suggested,
+  List<String> applied,
+) {
+  final stale = <String>[];
+  for (final raw in flagged) {
+    final name = raw.trim();
+    final match = applied.firstWhere(
+      (t) => t.toLowerCase() == name.toLowerCase(),
+      orElse: () => '',
+    );
+    if (match.isEmpty || stale.contains(match)) continue;
+    if (suggested.any((t) => t.toLowerCase() == match.toLowerCase())) continue;
+    stale.add(match);
+  }
+  return stale;
+}
+
+/// Puts [suggested] on the card being added, registering any tag new to
+/// [deck] in its tag list (so it becomes pickable for later cards too), and
+/// takes [stale] off it — the tags held over from the previous card that do
+/// not fit this one. The deck keeps defining a stale tag; only this card
+/// loses it. Returns the card's resulting tag list; [deck] is modified in
+/// place.
+List<String> applySuggestedTags(
+  Deck deck,
+  List<String> suggested,
+  List<String> applied, {
+  List<String> stale = const [],
+}) {
+  final next = [
+    for (final t in applied)
+      if (!stale.any((s) => s.toLowerCase() == t.toLowerCase())) t,
+  ];
+  for (final raw in suggested) {
+    final name = deck.addTag(raw);
+    if (name != null && !next.contains(name)) next.add(name);
+  }
+  return next;
+}
+
 class _DeckDetailScreenState extends State<DeckDetailScreen> {
   _SortMode _sortMode = _SortMode.added;
   final _nativeController = TextEditingController();
@@ -40,6 +105,7 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
   final _targetFocus = FocusNode();
   final _baseFormFocus = FocusNode();
   final _translationFocus = FocusNode();
+  final _tagsFocus = FocusNode();
   final _searchController = TextEditingController();
   final _searchFocus = FocusNode();
 
@@ -64,6 +130,15 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
   String? _translationSuggestion;
   bool _suggestionForTarget = true;
 
+  /// Tags the model proposed for the card being typed, not yet applied.
+  /// Some may not be in the deck's tag list — accepting adds them to it.
+  List<String> _tagSuggestions = [];
+
+  /// Tags already on the card being typed that the model judged wrong for
+  /// it — leftovers from the previous add (see [_newCardTags]). Accepting
+  /// the suggestion takes them off the card.
+  List<String> _staleTags = [];
+
   /// Guards the controller listeners while a suggestion is being written
   /// into a field programmatically, so it doesn't clear the other one.
   bool _applyingSuggestion = false;
@@ -74,7 +149,10 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
   String _lastTargetText = '';
 
   bool get _hasSuggestion =>
-      _baseFormSuggestion != null || _translationSuggestion != null;
+      _baseFormSuggestion != null ||
+      _translationSuggestion != null ||
+      _tagSuggestions.isNotEmpty ||
+      _staleTags.isNotEmpty;
 
   /// The field the user typed the word into (the one a dictionary-form
   /// suggestion applies to).
@@ -104,6 +182,7 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
     _targetFocus.dispose();
     _baseFormFocus.dispose();
     _translationFocus.dispose();
+    _tagsFocus.dispose();
     _searchController.dispose();
     _searchFocus.dispose();
     super.dispose();
@@ -143,6 +222,8 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
       setState(() {
         _baseFormSuggestion = null;
         _translationSuggestion = null;
+        _tagSuggestions = [];
+        _staleTags = [];
       });
     }
   }
@@ -182,29 +263,32 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
       _translateError = null;
     });
     try {
-      final String? baseForm;
-      final String suggestion;
+      final CardSuggestion result;
       if (deck.isLanguage) {
-        final result = await LlmService.suggestCard(
+        result = await LlmService.suggestCard(
           text: text,
           from: fromNative ? deck.nativeLanguage : deck.targetLanguage,
           to: fromNative ? deck.targetLanguage : deck.nativeLanguage,
+          existingTags: deck.tags,
+          appliedTags: _newCardTags,
         );
-        baseForm = result.baseForm;
-        suggestion = result.translation;
       } else {
         // Native side holds the answer, target side the question.
-        baseForm = null;
-        suggestion = await LlmService.completeCard(
+        result = await LlmService.completeCard(
           text: text,
           fromQuestion: !fromNative,
           subject: deck.kind.label,
+          existingTags: deck.tags,
+          appliedTags: _newCardTags,
         );
       }
       if (!mounted || seq != _requestSeq) return;
       setState(() {
-        _baseFormSuggestion = baseForm;
-        _translationSuggestion = suggestion;
+        _baseFormSuggestion = result.baseForm;
+        _translationSuggestion = result.otherSide;
+        _tagSuggestions = pendingCardTags(deck, result.tags, _newCardTags);
+        _staleTags =
+            staleCardTags(result.removeTags, result.tags, _newCardTags);
         _suggestionForTarget = fromNative;
       });
     } on LlmException catch (e) {
@@ -224,17 +308,19 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
   }
 
   /// Enter accepts everything pending: the dictionary form replaces what
-  /// the user typed and the translation fills the other box.
+  /// the user typed, the translation fills the other box, and the proposed
+  /// tags are applied to the card.
   void _acceptSuggestions() {
     final base = _baseFormSuggestion;
     final translation = _translationSuggestion;
-    if (base == null && translation == null) return;
+    if (!_hasSuggestion) return;
     setState(() {
       _baseFormSuggestion = null;
       _translationSuggestion = null;
     });
     if (base != null) _fill(_sourceController, base);
     if (translation != null) _fill(_destController, translation);
+    _acceptTags();
     // Return focus to the field the user was typing in, so Enter adds
     // the card straight away.
     _sourceFocus.requestFocus();
@@ -256,11 +342,34 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
     _sourceFocus.requestFocus();
   }
 
+  /// Applies the suggested tags to the card being added, adding the ones
+  /// the deck does not define yet to its tag list, and drops the ones held
+  /// over from the previous card that do not fit this one.
+  Future<void> _acceptTags() async {
+    if (_tagSuggestions.isEmpty && _staleTags.isEmpty) return;
+    final applied = applySuggestedTags(
+      deck,
+      _tagSuggestions,
+      _newCardTags,
+      stale: _staleTags,
+    );
+    setState(() {
+      _tagSuggestions = [];
+      _staleTags = [];
+      _newCardTags = applied;
+    });
+    _sourceFocus.requestFocus();
+    // The deck's own tag list may have grown, so persist it.
+    await widget.store.save();
+  }
+
   void _dismissSuggestions() {
     if (!_hasSuggestion) return;
     setState(() {
       _baseFormSuggestion = null;
       _translationSuggestion = null;
+      _tagSuggestions = [];
+      _staleTags = [];
     });
     _sourceFocus.requestFocus();
   }
@@ -272,7 +381,11 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
       return KeyEventResult.ignored;
     }
     if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
-      (_baseFormSuggestion != null ? _baseFormFocus : _translationFocus)
+      (_baseFormSuggestion != null
+              ? _baseFormFocus
+              : _translationSuggestion != null
+                  ? _translationFocus
+                  : _tagsFocus)
           .requestFocus();
       return KeyEventResult.handled;
     }
@@ -305,6 +418,8 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
       _translateError = null;
       _baseFormSuggestion = null;
       _translationSuggestion = null;
+      _tagSuggestions = [];
+      _staleTags = [];
     });
     // Back to the panel's first (left) field.
     (deck.isLanguage ? _nativeFocus : _targetFocus).requestFocus();
@@ -619,12 +734,13 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                               ? 'Type in either language and press Enter to '
                                   'translate. If you typed an inflected '
                                   'form, the dictionary form is suggested '
-                                  'under your field. Enter accepts the '
-                                  'suggestions, and once more adds the card.'
+                                  'under your field, and fitting tags below. '
+                                  'Enter accepts the suggestions, and once '
+                                  'more adds the card.'
                               : 'Type either side and press Enter to have '
-                                  'AI fill in the other. Use \$…\$ for '
-                                  'LaTeX. Enter accepts the suggestion, and '
-                                  'once more adds the card.',
+                                  'AI fill in the other and suggest tags. '
+                                  'Use \$…\$ for LaTeX. Enter accepts the '
+                                  'suggestions, and once more adds the card.',
                           style: TextStyle(
                               color: SprakTheme.inkSoft, fontSize: 13),
                         ),
@@ -725,6 +841,18 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                             ),
                           ],
                         ),
+                        if (_tagSuggestions.isNotEmpty ||
+                            _staleTags.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 10),
+                            child: _TagSuggestionBox(
+                              tags: _tagSuggestions,
+                              stale: _staleTags,
+                              deck: deck,
+                              focusNode: _tagsFocus,
+                              onTap: _acceptTags,
+                            ),
+                          ),
                         if (_translateError != null)
                           Padding(
                             padding: const EdgeInsets.only(top: 8),
@@ -1099,6 +1227,140 @@ class _SuggestionBox extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// The tags the model proposed for the card being added, offered until the
+/// user accepts them. Tags the deck does not define yet are marked "new" —
+/// accepting adds them to the deck's tag list.
+class _TagSuggestionBox extends StatelessWidget {
+  final List<String> tags;
+
+  /// Tags already on the card that this suggestion takes off it.
+  final List<String> stale;
+  final Deck deck;
+  final FocusNode focusNode;
+  final VoidCallback onTap;
+
+  const _TagSuggestionBox({
+    required this.tags,
+    required this.deck,
+    required this.focusNode,
+    required this.onTap,
+    this.stale = const [],
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: SprakTheme.panel,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        focusNode: focusNode,
+        borderRadius: BorderRadius.circular(12),
+        focusColor: SprakTheme.fjord.withValues(alpha: 0.15),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: SprakTheme.line),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.auto_awesome, size: 18, color: SprakTheme.fjord),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      tags.isEmpty ? 'Tags to remove' : 'Suggested tags',
+                      style: TextStyle(
+                          color: SprakTheme.inkSoft,
+                          fontSize: 11,
+                          letterSpacing: 0.5),
+                    ),
+                    const SizedBox(height: 4),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      children: [
+                        for (final t in tags)
+                          _SuggestedTagChip(
+                            label: t,
+                            isNew: deck.findTag(t) == null,
+                          ),
+                        for (final t in stale)
+                          _SuggestedTagChip(label: t, removed: true),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 10),
+              Text(
+                '⏎ to apply',
+                style: TextStyle(color: SprakTheme.inkSoft, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// One proposed tag, in its own color, with a "new" marker when the deck
+/// would gain it. A [removed] chip is one the card loses instead: struck
+/// through and muted, so the two directions read apart at a glance.
+class _SuggestedTagChip extends StatelessWidget {
+  final String label;
+  final bool isNew;
+  final bool removed;
+
+  const _SuggestedTagChip({
+    required this.label,
+    this.isNew = false,
+    this.removed = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = removed ? SprakTheme.inkSoft : SprakTheme.tagColor(label);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: removed ? 0.10 : 0.16),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              color: color,
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              decoration: removed ? TextDecoration.lineThrough : null,
+              decorationColor: color,
+            ),
+          ),
+          if (isNew) ...[
+            const SizedBox(width: 5),
+            Text(
+              'new',
+              style: TextStyle(
+                color: SprakTheme.inkSoft,
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }
