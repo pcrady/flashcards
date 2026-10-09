@@ -284,28 +284,42 @@ class SprakTheme {
 
   static LinearGradient get aurora => palette.gradient;
 
+  /// Text styles built here are asked for on every build of every card,
+  /// choice tile, and suggestion box, and each [GoogleFonts.getFont] call
+  /// resolves the family and builds a fresh style. [TextStyle] is
+  /// immutable, so the handful of (skin, size, weight) combinations the
+  /// app actually uses are built once and shared.
+  static final Map<String, TextStyle> _fontCache = {};
+
+  static TextStyle _cached(String key, TextStyle Function() build) =>
+      _fontCache.putIfAbsent(key, build);
+
   static TextStyle wordmark({double size = 26, Color? color}) {
     final p = palette;
-    return GoogleFonts.getFont(
-      p.displayFamily,
-      fontSize: size,
-      fontWeight: FontWeight.w700,
-      fontStyle: p.wordmarkStyle,
-      letterSpacing: p.crt ? 1.5 : 0.5,
-      color: color ?? p.ink,
-    );
+    return _cached('wordmark|${skin.value.name}|$size|$color', () {
+      return GoogleFonts.getFont(
+        p.displayFamily,
+        fontSize: size,
+        fontWeight: FontWeight.w700,
+        fontStyle: p.wordmarkStyle,
+        letterSpacing: p.crt ? 1.5 : 0.5,
+        color: color ?? p.ink,
+      );
+    });
   }
 
   /// Display style used for vocabulary words (supports Cyrillic).
   static TextStyle vocab({double size = 40, FontWeight? weight}) {
     final p = palette;
-    return GoogleFonts.getFont(
-      p.displayFamily,
-      fontSize: size,
-      fontWeight: weight ?? FontWeight.w600,
-      color: p.ink,
-      shadows: p.glow(p.fjord, blur: 18),
-    );
+    return _cached('vocab|${skin.value.name}|$size|$weight', () {
+      return GoogleFonts.getFont(
+        p.displayFamily,
+        fontSize: size,
+        fontWeight: weight ?? FontWeight.w600,
+        color: p.ink,
+        shadows: p.glow(p.fjord, blur: 18),
+      );
+    });
   }
 
   static ThemeData dark() {

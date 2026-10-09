@@ -246,21 +246,37 @@ class _QuizScreenState extends State<QuizScreen> {
     TtsService().speak(card.target, ttsLocaleFor(deck.targetLanguage));
   }
 
-  /// The current card's note as speech: the `$…$` LaTeX delimiters are
-  /// dropped so a note that annotates with math isn't read as "dollar".
-  String get _spokenNotes => card.notes
-      .replaceAll(RegExp(r'\$\$?'), ' ')
-      .replaceAll(RegExp(r'\s+'), ' ')
-      .trim();
+  static final _mathDelimiters = RegExp(r'\$\$?');
+  static final _whitespace = RegExp(r'\s+');
+
+  /// The note [_noteUtterancesCache] was built from, so an edit to the
+  /// card being asked rebuilds it. Null until the first note is read.
+  String? _notesSource;
+  List<Utterance> _noteUtterancesCache = const [];
 
   /// The current card's note as speech: only the target-language words
   /// inside it, since the explanation around them is in a language the
-  /// learner already has. Empty when the note quotes nothing.
-  List<Utterance> get _noteUtterances => targetRuns(
-        _spokenNotes,
+  /// learner already has. Empty when the note quotes nothing. The `$…$`
+  /// LaTeX delimiters are dropped first, so a note that annotates with
+  /// math isn't read as "dollar".
+  ///
+  /// Read on every build of the answered card, so the result is kept
+  /// until the note itself changes.
+  List<Utterance> get _noteUtterances {
+    final notes = card.notes;
+    if (_notesSource != notes) {
+      _notesSource = notes;
+      _noteUtterancesCache = targetRuns(
+        notes
+            .replaceAll(_mathDelimiters, ' ')
+            .replaceAll(_whitespace, ' ')
+            .trim(),
         targetLocale: ttsLocaleFor(deck.targetLanguage),
         nativeLocale: ttsLocaleFor(deck.nativeLanguage),
       );
+    }
+    return _noteUtterancesCache;
+  }
 
   /// Plays the note on demand, the way the speaker beside the question
   /// plays the word. Only offered on language decks, where the app speaks
@@ -362,7 +378,10 @@ class _QuizScreenState extends State<QuizScreen> {
   /// card and was dropped.
   List<String> get _studiedTags {
     if (widget.mode == QuizMode.resume || widget.tags.isEmpty) return const [];
-    return deck.cardsWithAnyTag(widget.tags).isEmpty ? const [] : widget.tags;
+    // Read on every build, so it asks whether any card matches rather than
+    // building the filtered list just to look at its length.
+    final matched = deck.cards.any((c) => widget.tags.any(c.tags.contains));
+    return matched ? widget.tags : const [];
   }
 
   /// The cards this session studies: the whole deck, or just the ones

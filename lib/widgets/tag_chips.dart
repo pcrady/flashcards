@@ -58,9 +58,28 @@ class TagFilterBar extends StatelessWidget {
     this.label = 'Filter',
   });
 
+  /// How many cards carry each of the deck's tags, in one pass. The same
+  /// numbers [Deck.tagUseCount] gives, without its scan of the deck per
+  /// tag — that is quadratic, and this bar redraws on every keystroke in
+  /// the search box above it.
+  Map<String, int> _useCounts() {
+    final counts = {for (final t in deck.tags) t: 0};
+    for (final card in deck.cards) {
+      for (var i = 0; i < card.tags.length; i++) {
+        final tag = card.tags[i];
+        // A tag listed twice on one card still counts that card once.
+        if (card.tags.indexOf(tag) != i) continue;
+        final n = counts[tag];
+        if (n != null) counts[tag] = n + 1;
+      }
+    }
+    return counts;
+  }
+
   @override
   Widget build(BuildContext context) {
     if (deck.tags.isEmpty) return const SizedBox.shrink();
+    final counts = _useCounts();
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
@@ -85,7 +104,7 @@ class TagFilterBar extends StatelessWidget {
               for (final tag in deck.tags)
                 _SelectableTagChip(
                   label: tag,
-                  count: deck.tagUseCount(tag),
+                  count: counts[tag] ?? 0,
                   color: SprakTheme.tagColor(tag),
                   selected: selected.contains(tag),
                   onTap: () {

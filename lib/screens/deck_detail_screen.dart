@@ -473,7 +473,8 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
   String _norm(String s) => s.toLowerCase().trim();
 
   /// IDs of cards that share the same native+target pair with at least
-  /// one other card in the deck.
+  /// one other card in the deck. A full scan of the deck — read it once
+  /// per build, never once per row.
   Set<String> get _duplicateCardIds {
     final byPair = <String, List<String>>{};
     for (final c in deck.cards) {
@@ -488,7 +489,8 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
 
   /// Sorted cards narrowed by the tag filter and then the search box,
   /// which is matched case-insensitively as a prefix against either side
-  /// of the card.
+  /// of the card. Sorts and copies the deck — read it once per build,
+  /// never once per row.
   List<CardItem> get _visibleCards {
     final query = _norm(_searchController.text);
     var cards = _sortedCards;
@@ -623,8 +625,8 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
   }
 
   /// Colored-dot legend for the mastery bar, non-empty buckets only.
-  Widget _buildMasteryLegend() {
-    final counts = deck.masteryCounts;
+  /// Shares [counts] with the bar rather than counting the deck twice.
+  Widget _buildMasteryLegend(Map<Mastery, int> counts) {
     return Wrap(
       spacing: 14,
       runSpacing: 4,
@@ -655,6 +657,13 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Each of these walks the whole deck, and the list below would ask for
+    // them again for every row it builds — so they are worked out once per
+    // frame here and handed down.
+    final visibleCards = _visibleCards;
+    final duplicateIds = _duplicateCardIds;
+    final masteryCounts = deck.masteryCounts;
+    final retention = deck.retention;
     return CallbackShortcuts(
       bindings: {
         LogicalKeySet(LogicalKeyboardKey.control, LogicalKeyboardKey.keyF):
@@ -879,14 +888,15 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
-                            MasteryBar(deck, height: 7),
+                            MasteryBar(deck,
+                                height: 7, counts: masteryCounts),
                             const SizedBox(height: 6),
-                            _buildMasteryLegend(),
+                            _buildMasteryLegend(masteryCounts),
                           ],
                         ),
                       ),
                       const SizedBox(width: 20),
-                      RetentionLabel(deck),
+                      RetentionLabel(retention),
                     ],
                   ),
                 ),
@@ -937,7 +947,7 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                                 _filterTags.isEmpty
                             ? '${deck.cards.length} '
                                 '${deck.cards.length == 1 ? "card" : "cards"}'
-                            : '${_visibleCards.length} of '
+                            : '${visibleCards.length} of '
                                 '${deck.cards.length} '
                                 '${deck.cards.length == 1 ? "card" : "cards"}',
                         style: TextStyle(
@@ -994,7 +1004,7 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                         child: Text('No cards in this set yet.',
                             style: TextStyle(color: SprakTheme.inkSoft)),
                       )
-                    : _visibleCards.isEmpty
+                    : visibleCards.isEmpty
                         ? Center(
                             child: Text(
                                 _searchController.text.trim().isEmpty
@@ -1004,13 +1014,13 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                           )
                         : ListView.separated(
                         padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
-                        itemCount: _visibleCards.length,
+                        itemCount: visibleCards.length,
                         separatorBuilder: (_, i) =>
                             const SizedBox(height: 8),
                         itemBuilder: (context, i) {
-                          final card = _visibleCards[i];
+                          final card = visibleCards[i];
                           final isDuplicate =
-                              _duplicateCardIds.contains(card.id);
+                              duplicateIds.contains(card.id);
                           return Card(
                             shape: isDuplicate
                                 ? RoundedRectangleBorder(

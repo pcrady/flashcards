@@ -42,12 +42,18 @@ const masteryOrder = [
 class MasteryBar extends StatelessWidget {
   final Deck deck;
   final double height;
-  const MasteryBar(this.deck, {super.key, this.height = 6});
+
+  /// [Deck.masteryCounts], when the caller has already worked them out —
+  /// they walk every card's review history, so a screen that also draws
+  /// the legend beside the bar counts once and passes the result to both.
+  final Map<Mastery, int>? counts;
+
+  const MasteryBar(this.deck, {super.key, this.height = 6, this.counts});
 
   @override
   Widget build(BuildContext context) {
     if (deck.cards.isEmpty) return const SizedBox.shrink();
-    final counts = deck.masteryCounts;
+    final counts = this.counts ?? deck.masteryCounts;
     return Tooltip(
       message: [
         for (final m in masteryOrder)
@@ -80,13 +86,17 @@ class MasteryBar extends StatelessWidget {
 /// "Retention 87%" with an explanatory tooltip; an em-dash before any
 /// re-encounters exist to measure.
 class RetentionLabel extends StatelessWidget {
-  final Deck deck;
+  /// [Deck.retention] — null when there is nothing to measure yet. Passed
+  /// in rather than read off the deck, since working it out walks every
+  /// review in the deck and callers usually need the value themselves to
+  /// decide whether to show the label at all.
+  final double? retention;
   final double fontSize;
-  const RetentionLabel(this.deck, {super.key, this.fontSize = 13});
+  const RetentionLabel(this.retention, {super.key, this.fontSize = 13});
 
   @override
   Widget build(BuildContext context) {
-    final r = deck.retention;
+    final r = retention;
     final color = r == null
         ? SprakTheme.inkSoft
         : r >= 0.85

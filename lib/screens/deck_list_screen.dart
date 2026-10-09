@@ -71,6 +71,14 @@ class DeckListScreen extends StatelessWidget {
                       d.folderId == null || !folderIds.contains(d.folderId))
                   .toList()
               : store.decks.where((d) => d.folderId == folder!.id).toList();
+          final List<Folder> visibleFolders =
+              folder == null ? store.folders : const [];
+          // One pass instead of a scan of every deck per folder tile.
+          final deckCounts = <String, int>{};
+          for (final d in store.decks) {
+            final id = d.folderId;
+            if (id != null) deckCounts[id] = (deckCounts[id] ?? 0) + 1;
+          }
 
           if (folder == null &&
               store.decks.isEmpty &&
@@ -87,7 +95,10 @@ class DeckListScreen extends StatelessWidget {
             alignment: Alignment.topCenter,
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 1100),
-              child: GridView(
+              // Built lazily: a tile costs a walk of its deck's review
+              // history (the mastery bar and retention figure), so only
+              // the ones on screen are worth building.
+              child: GridView.builder(
                 padding: const EdgeInsets.fromLTRB(24, 8, 24, 96),
                 gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
                   maxCrossAxisExtent: 340,
@@ -97,40 +108,41 @@ class DeckListScreen extends StatelessWidget {
                   // the window resizes.
                   mainAxisExtent: 195,
                 ),
-                children: [
-                  if (folder == null)
-                    for (final f in store.folders)
-                      _FolderCard(
-                        folder: f,
-                        deckCount: store.decks
-                            .where((d) => d.folderId == f.id)
-                            .length,
-                        onOpen: () => Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) =>
-                                DeckListScreen(store: store, folder: f),
-                          ),
-                        ),
-                        onRename: () => _renameFolder(context, f),
-                        onDelete: () => _confirmDeleteFolder(context, f),
-                      ),
-                  for (final deck in visibleDecks)
-                    _DeckCard(
-                      deck: deck,
+                itemCount: visibleFolders.length + visibleDecks.length,
+                itemBuilder: (context, i) {
+                  // Folders come first, then the decks.
+                  if (i < visibleFolders.length) {
+                    final f = visibleFolders[i];
+                    return _FolderCard(
+                      folder: f,
+                      deckCount: deckCounts[f.id] ?? 0,
                       onOpen: () => Navigator.of(context).push(
                         MaterialPageRoute(
                           builder: (_) =>
-                              DeckDetailScreen(store: store, deck: deck),
+                              DeckListScreen(store: store, folder: f),
                         ),
                       ),
-                      onLearn: deck.cards.isEmpty
-                          ? null
-                          : () => startLearning(context, store, deck),
-                      onRename: () => _renameDeck(context, deck),
-                      onMove: () => _moveDeck(context, deck),
-                      onDelete: () => _confirmDelete(context, deck),
+                      onRename: () => _renameFolder(context, f),
+                      onDelete: () => _confirmDeleteFolder(context, f),
+                    );
+                  }
+                  final deck = visibleDecks[i - visibleFolders.length];
+                  return _DeckCard(
+                    deck: deck,
+                    onOpen: () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) =>
+                            DeckDetailScreen(store: store, deck: deck),
+                      ),
                     ),
-                ],
+                    onLearn: deck.cards.isEmpty
+                        ? null
+                        : () => startLearning(context, store, deck),
+                    onRename: () => _renameDeck(context, deck),
+                    onMove: () => _moveDeck(context, deck),
+                    onDelete: () => _confirmDelete(context, deck),
+                  );
+                },
               ),
             ),
           );
@@ -524,6 +536,10 @@ class _DeckCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Both of these walk the deck's whole review history, so they are
+    // worked out once here rather than once per widget that shows them.
+    final retention = deck.retention;
+    final masteryCounts = deck.masteryCounts;
     return Card(
       clipBehavior: Clip.antiAlias,
       child: InkWell(
@@ -588,7 +604,7 @@ class _DeckCard extends StatelessWidget {
               if (deck.cards.isNotEmpty) ...[
                 Padding(
                   padding: const EdgeInsets.only(right: 8),
-                  child: MasteryBar(deck, height: 5),
+                  child: MasteryBar(deck, height: 5, counts: masteryCounts),
                 ),
                 const SizedBox(height: 8),
               ],
@@ -608,9 +624,9 @@ class _DeckCard extends StatelessWidget {
                       style: const TextStyle(fontSize: 12),
                     ),
                   ),
-                  if (deck.retention != null) ...[
+                  if (retention != null) ...[
                     const SizedBox(width: 10),
-                    RetentionLabel(deck, fontSize: 12),
+                    RetentionLabel(retention, fontSize: 12),
                   ],
                   const Spacer(),
                   FilledButton.tonalIcon(
