@@ -112,6 +112,10 @@ class _QuizScreenState extends State<QuizScreen> {
   /// appears twice: once per direction.
   late List<_Task> _remaining;
 
+  /// The group's task order as first dealt, so strict mode can replay it
+  /// unchanged after a miss. Null when a resumed session lost it.
+  List<_Task>? _groupOrder;
+
   _Phase _phase = _Phase.asking;
   bool? _lastCorrect;
   int _correctCount = 0;
@@ -152,6 +156,12 @@ class _QuizScreenState extends State<QuizScreen> {
   static const _autoSpeakPref = 'auto_speak';
   bool _autoSpeak = true;
 
+  /// Strict mode: a miss sends the learner back to the start of the
+  /// group, with every task in it to be cleared again. Remembered across
+  /// sessions.
+  static const _strictPref = 'strict_mode';
+  bool _strict = false;
+
   /// Guards the first question: the saved toggle arrives a frame or two
   /// after the quiz opens, so nothing is spoken until its value is known.
   bool _autoSpeakLoaded = false;
@@ -184,6 +194,7 @@ class _QuizScreenState extends State<QuizScreen> {
         _chatPosition =
             ChatPosition.fromId(prefs.getString(_chatPositionPref));
         _autoSpeak = prefs.getBool(_autoSpeakPref) ?? _autoSpeak;
+        _strict = prefs.getBool(_strictPref) ?? _strict;
         _autoSpeakLoaded = true;
       });
       // The first question was already on screen before the toggle loaded.
@@ -283,6 +294,13 @@ class _QuizScreenState extends State<QuizScreen> {
   /// at all.
   void _speakNotes() {
     TtsService().speakAll(_noteUtterances);
+    _focusTask();
+  }
+
+  void _setStrict(bool value) {
+    setState(() => _strict = value);
+    SharedPreferences.getInstance()
+        .then((prefs) => prefs.setBool(_strictPref, value));
     _focusTask();
   }
 
@@ -504,6 +522,17 @@ class _QuizScreenState extends State<QuizScreen> {
         ],
       ],
     ]..shuffle(_random);
+    _groupOrder = List.of(_remaining);
+  }
+
+  /// Strict-mode restart: the same tasks in the same order as first dealt.
+  void _restartGroup() {
+    final order = _groupOrder;
+    if (order == null) {
+      _startGroup();
+    } else {
+      _remaining = List.of(order);
+    }
   }
 
   String _normalize(String s) => s
@@ -653,6 +682,8 @@ class _QuizScreenState extends State<QuizScreen> {
 
     if (_lastCorrect == true) {
       _remaining.removeAt(0); // this direction mastered
+    } else if (_strict) {
+      _restartGroup(); // strict: a miss replays the group in order
     } else {
       _remaining.add(_remaining.removeAt(0)); // retry later in the group
     }
@@ -775,6 +806,15 @@ class _QuizScreenState extends State<QuizScreen> {
           ),
         ),
         actions: [
+          IconButton(
+            icon: Icon(_strict ? Icons.lock : Icons.lock_open_outlined,
+                size: 20),
+            color: _strict ? SprakTheme.fjord : SprakTheme.inkSoft,
+            tooltip: _strict
+                ? 'Strict mode: a miss restarts the group (on)'
+                : 'Strict mode: a miss restarts the group (off)',
+            onPressed: () => _setStrict(!_strict),
+          ),
           if (deck.isLanguage) ...[
             IconButton(
               // Filled while on, so it reads as engaged next to the
