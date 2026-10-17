@@ -116,6 +116,11 @@ class _QuizScreenState extends State<QuizScreen> {
   /// unchanged after a miss. Null when a resumed session lost it.
   List<_Task>? _groupOrder;
 
+  /// Strict mode: how many full passes of the group are already cleared.
+  /// Each group must be cleared [_strictPasses] times, reshuffled each time.
+  static const _strictPasses = 3;
+  int _strictPass = 0;
+
   _Phase _phase = _Phase.asking;
   bool? _lastCorrect;
   int _correctCount = 0;
@@ -502,6 +507,12 @@ class _QuizScreenState extends State<QuizScreen> {
   }
 
   void _startGroup() {
+    _strictPass = 0;
+    _dealTasks();
+  }
+
+  /// Deals every task in the current group in a fresh random order.
+  void _dealTasks() {
     // Which sides get asked: askInTarget=true shows the target/front side.
     final askFront = _direction != QuizDirection.back;
     final askBack = _direction != QuizDirection.front;
@@ -529,7 +540,7 @@ class _QuizScreenState extends State<QuizScreen> {
   void _restartGroup() {
     final order = _groupOrder;
     if (order == null) {
-      _startGroup();
+      _dealTasks();
     } else {
       _remaining = List.of(order);
     }
@@ -688,6 +699,11 @@ class _QuizScreenState extends State<QuizScreen> {
       _remaining.add(_remaining.removeAt(0)); // retry later in the group
     }
 
+    if (_remaining.isEmpty && _strict && _strictPass + 1 < _strictPasses) {
+      _strictPass++; // strict: clear the group again, reshuffled
+      _dealTasks();
+    }
+
     if (_remaining.isEmpty) {
       final deckDone = _groupIndex + 1 >= _groups.length;
       // A finished deck clears the saved session; mid-deck the session
@@ -767,6 +783,7 @@ class _QuizScreenState extends State<QuizScreen> {
             const SizedBox(width: 14),
             Text(
               'Group ${_groupIndex + 1} of ${_groups.length}'
+              '${_strict ? '  ·  Pass ${_strictPass + 1}/$_strictPasses' : ''}'
               '  ·  $_tasksDone of $_tasksTotal',
               style: TextStyle(color: SprakTheme.inkSoft, fontSize: 13),
             ),
