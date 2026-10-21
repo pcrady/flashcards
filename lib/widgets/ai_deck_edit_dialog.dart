@@ -287,6 +287,16 @@ class _AiDeckEditDialogState extends State<AiDeckEditDialog> {
 
   Widget _buildReview() {
     final plan = _plan!;
+    final total = plan.additions.length +
+        plan.removals.length +
+        plan.retags.length +
+        plan.noteEdits.length;
+    final selected = [
+      ..._addSelected,
+      ..._removeSelected,
+      ..._tagSelected,
+      ..._noteSelected,
+    ].where((v) => v).length;
     return ConstrainedBox(
       constraints: const BoxConstraints(maxHeight: 440),
       child: SingleChildScrollView(
@@ -294,6 +304,15 @@ class _AiDeckEditDialogState extends State<AiDeckEditDialog> {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Text(
+                'The AI suggested $total '
+                '${total == 1 ? "change" : "changes"}'
+                '${selected == total ? '' : ' · $selected selected'}',
+                style: TextStyle(color: SprakTheme.inkSoft, fontSize: 13),
+              ),
+            ),
             if (plan.additions.isNotEmpty) ...[
               Text('Add ${plan.additions.length} '
                   '${plan.additions.length == 1 ? "card" : "cards"}',

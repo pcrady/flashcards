@@ -30,7 +30,14 @@ enum QuizMode {
   mistakes,
 }
 
-const int _kGroupSize = 6;
+/// Cards per study group unless the learner picks another size.
+const int kDefaultGroupSize = 6;
+
+/// Group sizes the learner can pick from.
+const List<int> kGroupSizeOptions = [3, 4, 5, 6, 8, 10, 12, 15, 20];
+
+/// SharedPreferences key remembering the learner's preferred group size.
+const String kGroupSizePref = 'group_size';
 
 /// Below this many total attempts (wrong + correct) a card's ratio isn't
 /// trustworthy, so "focus on mistakes" assumes the learner doesn't know it
@@ -41,7 +48,8 @@ const int _kMistakeMinAttempts = 30;
 /// typing or by picking from multiple choice.
 typedef _Task = ({CardItem card, bool askInTarget, bool isChoice});
 
-/// Quiz workspace. Cards are shuffled and dealt in groups of six; every
+/// Quiz workspace. Cards are shuffled and dealt in groups (six by
+/// default, changeable from the app bar mid-session); every
 /// card must clear all its tasks (which tasks depends on the quiz style)
 /// before the next group starts, and missed tasks go back into the group's
 /// rotation. Clearing the whole deck ends with a celebration. An AI tutor
@@ -64,6 +72,10 @@ class QuizScreen extends StatefulWidget {
   /// so this does not apply to [QuizMode.resume].
   final List<String> tags;
 
+  /// Cards per study group for a fresh session. A resumed session keeps
+  /// the groups it was saved with until the learner picks a new size.
+  final int groupSize;
+
   const QuizScreen({
     super.key,
     required this.store,
@@ -74,6 +86,7 @@ class QuizScreen extends StatefulWidget {
     this.direction = QuizDirection.both,
     this.mistakeFraction = 1.0,
     this.tags = const [],
+    this.groupSize = kDefaultGroupSize,
   });
 
   @override
@@ -107,6 +120,7 @@ class _QuizScreenState extends State<QuizScreen> {
 
   late List<List<CardItem>> _groups;
   int _groupIndex = 0;
+  late int _groupSize;
 
   /// Tasks in the current group not yet answered correctly. Each card
   /// appears twice: once per direction.
@@ -206,6 +220,7 @@ class _QuizScreenState extends State<QuizScreen> {
       _maybeSpeakPrompt();
     });
     _style = widget.style;
+    _groupSize = widget.groupSize;
     _gradingMode = widget.grading;
     _direction = widget.direction;
     final session = deck.session;
@@ -441,15 +456,50 @@ class _QuizScreenState extends State<QuizScreen> {
     return all.take(keep).toList();
   }
 
-  /// Partitions [ordered] into groups of six and starts the first one.
+  /// Splits [cards] into consecutive groups of [_groupSize].
+  List<List<CardItem>> _chunk(List<CardItem> cards) => [
+        for (var i = 0; i < cards.length; i += _groupSize)
+          cards.sublist(i, min(i + _groupSize, cards.length)),
+      ];
+
+  /// Partitions [ordered] into groups of [_groupSize] and starts the first
+  /// one.
   void _buildGroups(List<CardItem> ordered) {
-    _groups = [
-      for (var i = 0; i < ordered.length; i += _kGroupSize)
-        ordered.sublist(i, min(i + _kGroupSize, ordered.length)),
-    ];
+    _groups = _chunk(ordered);
     _groupIndex = 0;
     _startGroup();
     _persistSession();
+  }
+
+  /// Re-deals the groups not yet cleared at a new size, keeping their card
+  /// order. The current group restarts from scratch at the new size; on
+  /// the group-cleared screen only the groups after it are re-dealt.
+  void _setGroupSize(int size) {
+    SharedPreferences.getInstance()
+        .then((prefs) => prefs.setInt(kGroupSizePref, size));
+    if (size == _groupSize) {
+      _focusTask();
+      return;
+    }
+    final cleared = _phase == _Phase.groupCleared;
+    final keep = cleared ? _groupIndex + 1 : _groupIndex;
+    final rest = [for (final g in _groups.skip(keep)) ...g];
+    setState(() {
+      _groupSize = size;
+      _groups = [..._groups.take(keep), ..._chunk(rest)];
+      if (!cleared) {
+        _startGroup();
+        _phase = _Phase.asking;
+        _lastCorrect = null;
+        _selectedChoice = null;
+        _gradeError = null;
+        _answerController.clear();
+        _beginTask();
+      }
+    });
+    _persistSession();
+    widget.store.save();
+    _focusTask();
   }
 
   /// Rebuilds quiz state from a saved session; false if it is no longer
@@ -823,6 +873,31 @@ class _QuizScreenState extends State<QuizScreen> {
           ),
         ),
         actions: [
+          if (_phase != _Phase.deckCleared)
+            PopupMenuButton<int>(
+              tooltip: 'Words per group: $_groupSize',
+              initialValue: _groupSize,
+              onSelected: _setGroupSize,
+              itemBuilder: (context) => [
+                for (final n in kGroupSizeOptions)
+                  PopupMenuItem(value: n, child: Text('$n per group')),
+              ],
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.grid_view,
+                        size: 18, color: SprakTheme.inkSoft),
+                    const SizedBox(width: 4),
+                    Text('$_groupSize',
+                        style: TextStyle(
+                            color: SprakTheme.inkSoft,
+                            fontWeight: FontWeight.w700)),
+                  ],
+                ),
+              ),
+            ),
           IconButton(
             icon: Icon(_strict ? Icons.lock : Icons.lock_open_outlined,
                 size: 20),

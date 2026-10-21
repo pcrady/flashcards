@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models.dart';
 import '../screens/quiz_screen.dart';
@@ -25,6 +26,9 @@ Future<void> startLearning(
 
   var tags = deck.keepKnownTags(initialTags);
   final session = deck.session;
+  final prefs = await SharedPreferences.getInstance();
+  var groupSize = prefs.getInt(kGroupSizePref) ?? kDefaultGroupSize;
+  if (!context.mounted) return;
   final mode = await showDialog<QuizMode>(
     context: context,
     builder: (context) => StatefulBuilder(
@@ -62,10 +66,34 @@ Future<void> startLearning(
                   ),
                   const SizedBox(height: 14),
                 ],
+                Row(
+                  children: [
+                    Text('Words per group',
+                        style: TextStyle(
+                            color: SprakTheme.inkSoft, fontSize: 13)),
+                    const SizedBox(width: 12),
+                    DropdownButton<int>(
+                      value: groupSize,
+                      isDense: true,
+                      items: [
+                        for (final n
+                            in {...kGroupSizeOptions, groupSize}.toList()
+                              ..sort())
+                          DropdownMenuItem(value: n, child: Text('$n')),
+                      ],
+                      onChanged: (n) {
+                        if (n == null) return;
+                        setState(() => groupSize = n);
+                        prefs.setInt(kGroupSizePref, n);
+                      },
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
                 _ModeTile(
                   icon: Icons.shuffle,
                   title: tags.isEmpty ? 'Whole deck' : 'Every selected card',
-                  subtitle: 'Shuffled into groups of six.',
+                  subtitle: 'Shuffled into groups of $groupSize.',
                   enabled: canStart,
                   onTap: () => Navigator.pop(context, QuizMode.whole),
                 ),
@@ -305,7 +333,8 @@ Future<void> startLearning(
           grading: grading,
           direction: direction,
           mistakeFraction: mistakeFraction,
-          tags: tags),
+          tags: tags,
+          groupSize: groupSize),
     ),
   );
 }
