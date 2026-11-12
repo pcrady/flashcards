@@ -72,6 +72,10 @@ class QuizScreen extends StatefulWidget {
   /// so this does not apply to [QuizMode.resume].
   final List<String> tags;
 
+  /// Study only this numbered card group ([Deck.cardGroups]), or the whole
+  /// deck when null. Like [tags], ignored by [QuizMode.resume].
+  final int? cardGroup;
+
   /// Cards per study group for a fresh session. A resumed session keeps
   /// the groups it was saved with until the learner picks a new size.
   final int groupSize;
@@ -86,6 +90,7 @@ class QuizScreen extends StatefulWidget {
     this.direction = QuizDirection.both,
     this.mistakeFraction = 1.0,
     this.tags = const [],
+    this.cardGroup,
     this.groupSize = kDefaultGroupSize,
   });
 
@@ -422,11 +427,21 @@ class _QuizScreenState extends State<QuizScreen> {
     return matched ? widget.tags : const [];
   }
 
-  /// The cards this session studies: the whole deck, or just the ones
-  /// carrying a filtered tag. Never empty — a filter that matches nothing
-  /// falls back to the deck rather than opening an empty quiz.
+  /// The card group actually narrowing this session — null when resuming
+  /// or when the group no longer holds any card.
+  int? get _studiedCardGroup {
+    final g = widget.cardGroup;
+    if (widget.mode == QuizMode.resume || g == null) return null;
+    return deck.cards.any((c) => c.group == g) ? g : null;
+  }
+
+  /// The cards this session studies: the whole deck, or just the ones in
+  /// the chosen card group and/or carrying a filtered tag. Never empty — a
+  /// filter that matches nothing falls back to the deck rather than
+  /// opening an empty quiz.
   List<CardItem> get _pool {
-    final filtered = deck.cardsWithAnyTag(widget.tags);
+    final filtered =
+        deck.cardsWithAnyTag(widget.tags, group: widget.cardGroup);
     return filtered.isEmpty ? List.of(deck.cards) : filtered;
   }
 
@@ -837,8 +852,22 @@ class _QuizScreenState extends State<QuizScreen> {
               '  ·  $_tasksDone of $_tasksTotal',
               style: TextStyle(color: SprakTheme.inkSoft, fontSize: 13),
             ),
-            // The tags this session was narrowed to, so a partial deck
-            // never looks like the whole one.
+            // The card group and tags this session was narrowed to, so a
+            // partial deck never looks like the whole one.
+            if (_studiedCardGroup != null) ...[
+              const SizedBox(width: 14),
+              Icon(Icons.layers_outlined,
+                  size: 15, color: SprakTheme.inkSoft),
+              const SizedBox(width: 6),
+              Text(
+                'Card group $_studiedCardGroup',
+                style: TextStyle(
+                  color: SprakTheme.fjord,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
             if (_studiedTags.isNotEmpty) ...[
               const SizedBox(width: 14),
               Icon(Icons.filter_alt_outlined,

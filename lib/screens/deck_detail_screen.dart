@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -122,6 +123,10 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
   /// dialog's filter, so "show me just the verbs" carries into a session.
   List<String> _filterTags = [];
 
+  /// The card group the list and the mastery stats are narrowed to, or
+  /// null for the whole deck. Also seeds the study dialog's group.
+  int? _filterGroup;
+
   /// Pending suggestions, shown as dropdowns the user must pick (click, or
   /// ↓ then Enter) before they land in the text boxes: when the typed word
   /// was inflected, its basic dictionary form appears under the field the
@@ -201,8 +206,7 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
   void _onTyped({required bool fromNative}) {
     // The controller also notifies on selection/focus changes — only a
     // real text change counts as typing.
-    final text =
-        (fromNative ? _nativeController : _targetController).text;
+    final text = (fromNative ? _nativeController : _targetController).text;
     final changed = fromNative
         ? text != _lastNativeText
         : text != _lastTargetText;
@@ -287,8 +291,11 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
         _baseFormSuggestion = result.baseForm;
         _translationSuggestion = result.otherSide;
         _tagSuggestions = pendingCardTags(deck, result.tags, _newCardTags);
-        _staleTags =
-            staleCardTags(result.removeTags, result.tags, _newCardTags);
+        _staleTags = staleCardTags(
+          result.removeTags,
+          result.tags,
+          _newCardTags,
+        );
         _suggestionForTarget = fromNative;
       });
     } on LlmException catch (e) {
@@ -384,8 +391,8 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
       (_baseFormSuggestion != null
               ? _baseFormFocus
               : _translationSuggestion != null
-                  ? _translationFocus
-                  : _tagsFocus)
+              ? _translationFocus
+              : _tagsFocus)
           .requestFocus();
       return KeyEventResult.handled;
     }
@@ -401,7 +408,7 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
     final target = _targetController.text.trim();
     if (native.isEmpty || target.isEmpty) return;
 
-    deck.cards.add(
+    deck.addCard(
       CardItem(
         native: native,
         target: target,
@@ -462,12 +469,11 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
   /// to a copy — the stored order ("as added") is never mutated.
   List<CardItem> get _sortedCards {
     if (_sortMode == _SortMode.added) return deck.cards.reversed.toList();
-    return List.of(deck.cards)
-      ..sort((a, b) {
-        final byWrong = b.timesWrong.compareTo(a.timesWrong);
-        if (byWrong != 0) return byWrong;
-        return a.timesCorrect.compareTo(b.timesCorrect);
-      });
+    return List.of(deck.cards)..sort((a, b) {
+      final byWrong = b.timesWrong.compareTo(a.timesWrong);
+      if (byWrong != 0) return byWrong;
+      return a.timesCorrect.compareTo(b.timesCorrect);
+    });
   }
 
   String _norm(String s) => s.toLowerCase().trim();
@@ -494,14 +500,19 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
   List<CardItem> get _visibleCards {
     final query = _norm(_searchController.text);
     var cards = _sortedCards;
+    if (_filterGroup != null) {
+      cards = cards.where((c) => c.group == _filterGroup).toList();
+    }
     if (_filterTags.isNotEmpty) {
       cards = cards.where((c) => _filterTags.any(c.tags.contains)).toList();
     }
     if (query.isEmpty) return cards;
     return cards
-        .where((c) =>
-            _norm(c.native).startsWith(query) ||
-            _norm(c.target).startsWith(query))
+        .where(
+          (c) =>
+              _norm(c.native).startsWith(query) ||
+              _norm(c.target).startsWith(query),
+        )
         .toList();
   }
 
@@ -520,16 +531,20 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
     }
     var added = 0;
     for (final a in plan.additions) {
-      final duplicate = deck.cards.any((c) =>
-          _norm(c.target) == _norm(a.target) &&
-          _norm(c.native) == _norm(a.native));
+      final duplicate = deck.cards.any(
+        (c) =>
+            _norm(c.target) == _norm(a.target) &&
+            _norm(c.native) == _norm(a.native),
+      );
       if (!duplicate) {
-        deck.cards.add(CardItem(
-          native: a.native,
-          target: a.target,
-          notes: a.notes,
-          tags: a.tags,
-        ));
+        deck.addCard(
+          CardItem(
+            native: a.native,
+            target: a.target,
+            notes: a.notes,
+            tags: a.tags,
+          ),
+        );
         added++;
       }
     }
@@ -556,17 +571,19 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
     setState(() {});
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text([
-          if (added > 0) 'Added $added ${added == 1 ? "card" : "cards"}',
-          if (removed > 0)
-            'removed $removed ${removed == 1 ? "card" : "cards"}',
-          if (retagged > 0)
-            'retagged $retagged ${retagged == 1 ? "card" : "cards"}',
-          if (renoted > 0)
-            'updated notes on $renoted ${renoted == 1 ? "card" : "cards"}',
-          if (added == 0 && removed == 0 && retagged == 0 && renoted == 0)
-            'No changes applied',
-        ].join(', ')),
+        content: Text(
+          [
+            if (added > 0) 'Added $added ${added == 1 ? "card" : "cards"}',
+            if (removed > 0)
+              'removed $removed ${removed == 1 ? "card" : "cards"}',
+            if (retagged > 0)
+              'retagged $retagged ${retagged == 1 ? "card" : "cards"}',
+            if (renoted > 0)
+              'updated notes on $renoted ${renoted == 1 ? "card" : "cards"}',
+            if (added == 0 && removed == 0 && retagged == 0 && renoted == 0)
+              'No changes applied',
+          ].join(', '),
+        ),
       ),
     );
   }
@@ -603,8 +620,7 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
   /// the translation under the other one.
   List<Widget> _suggestionsUnder({required bool isNative}) {
     final typedHere = isNative == _suggestionForTarget;
-    final suggestion =
-        typedHere ? _baseFormSuggestion : _translationSuggestion;
+    final suggestion = typedHere ? _baseFormSuggestion : _translationSuggestion;
     if (suggestion == null) return const [];
     return [
       Padding(
@@ -660,10 +676,18 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
     // Each of these walks the whole deck, and the list below would ask for
     // them again for every row it builds — so they are worked out once per
     // frame here and handed down.
+    final cardGroups = deck.cardGroups;
+    // A group emptied by deletions no longer exists to filter on.
+    if (_filterGroup != null && !cardGroups.contains(_filterGroup)) {
+      _filterGroup = null;
+    }
     final visibleCards = _visibleCards;
     final duplicateIds = _duplicateCardIds;
-    final masteryCounts = deck.masteryCounts;
-    final retention = deck.retention;
+    final statsCards = _filterGroup == null
+        ? deck.cards
+        : deck.cardsInGroup(_filterGroup!);
+    final masteryCounts = Deck.masteryCountsOf(statsCards);
+    final retention = Deck.retentionOf(statsCards);
     return CallbackShortcuts(
       bindings: {
         LogicalKeySet(LogicalKeyboardKey.control, LogicalKeyboardKey.keyF):
@@ -672,505 +696,755 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
             _focusSearch,
       },
       child: Scaffold(
-      appBar: AppBar(
-        title: InkWell(
-          onTap: _renameDeck,
-          borderRadius: BorderRadius.circular(8),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
+        appBar: AppBar(
+          title: InkWell(
+            onTap: _renameDeck,
+            borderRadius: BorderRadius.circular(8),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(deck.emblem, style: const TextStyle(fontSize: 22)),
+                  const SizedBox(width: 10),
+                  Flexible(
+                    child: Text(deck.name, overflow: TextOverflow.ellipsis),
+                  ),
+                  const SizedBox(width: 8),
+                  Icon(
+                    Icons.edit_outlined,
+                    size: 16,
+                    color: SprakTheme.inkSoft,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            FilledButton.tonalIcon(
+              icon: const Icon(Icons.sell_outlined, size: 18),
+              label: const Text('Tags'),
+              onPressed: _manageTags,
+            ),
+            const SizedBox(width: 10),
+            FilledButton.tonalIcon(
+              icon: const Icon(Icons.auto_awesome, size: 18),
+              label: const Text('Edit with AI'),
+              onPressed: _openAiEdit,
+            ),
+            const SizedBox(width: 10),
+            FilledButton.tonalIcon(
+              icon: const Icon(Icons.school_outlined, size: 18),
+              label: const Text('Learn'),
+              onPressed: deck.cards.isEmpty
+                  ? null
+                  : () => startLearning(
+                      context,
+                      widget.store,
+                      deck,
+                      initialTags: _filterTags,
+                      initialGroup: _filterGroup,
+                    ),
+            ),
+            const SizedBox(width: 16),
+          ],
+        ),
+        body: Align(
+          alignment: Alignment.topCenter,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 1100),
+            child: Column(
               children: [
-                Text(deck.emblem, style: const TextStyle(fontSize: 22)),
-                const SizedBox(width: 10),
-                Flexible(
-                  child: Text(deck.name, overflow: TextOverflow.ellipsis),
+                // --- Add-card panel with auto-translation ---
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 8, 24, 16),
+                  child: Card(
+                    child: Focus(
+                      canRequestFocus: false,
+                      onKeyEvent: _handlePanelKey,
+                      child: Padding(
+                        padding: const EdgeInsets.all(20),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Add a word or phrase',
+                              style: Theme.of(context).textTheme.titleLarge,
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              deck.isLanguage
+                                  ? 'Type in either language and press Enter to '
+                                        'translate. If you typed an inflected '
+                                        'form, the dictionary form is suggested '
+                                        'under your field, and fitting tags below. '
+                                        'Enter accepts the suggestions, and once '
+                                        'more adds the card.'
+                                  : 'Type either side and press Enter to have '
+                                        'AI fill in the other and suggest tags. '
+                                        'Use \$…\$ for LaTeX. Enter accepts the '
+                                        'suggestions, and once more adds the card.',
+                              style: TextStyle(
+                                color: SprakTheme.inkSoft,
+                                fontSize: 13,
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
+                                    children: [
+                                      Row(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          // Language decks read native →
+                                          // target; other decks read Front →
+                                          // Back (target → native).
+                                          Expanded(
+                                            child: _addField(
+                                              isNative: deck.isLanguage,
+                                            ),
+                                          ),
+                                          Padding(
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 10,
+                                              vertical: 14,
+                                            ),
+                                            child: _translating
+                                                ? const SizedBox(
+                                                    width: 22,
+                                                    height: 22,
+                                                    child:
+                                                        CircularProgressIndicator(
+                                                          strokeWidth: 2.5,
+                                                        ),
+                                                  )
+                                                : Icon(
+                                                    Icons.swap_horiz,
+                                                    color: SprakTheme.inkSoft,
+                                                  ),
+                                          ),
+                                          Expanded(
+                                            child: _addField(
+                                              isNative: !deck.isLanguage,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 12),
+                                      // Notes sit under both sides, spanning
+                                      // their full width.
+                                      TextField(
+                                        controller: _notesController,
+                                        style: const TextStyle(fontSize: 13),
+                                        decoration: InputDecoration(
+                                          labelText: 'Notes (optional)',
+                                          alignLabelWithHint: true,
+                                          hintText:
+                                              'Meaning, usage, example '
+                                              'sentence…',
+                                          hintStyle: TextStyle(
+                                            color: SprakTheme.inkSoft,
+                                            fontSize: 13,
+                                          ),
+                                        ),
+                                        minLines: 3,
+                                        maxLines: 6,
+                                        // Prose field: Enter adds a line
+                                        // instead of adding the card.
+                                        keyboardType: TextInputType.multiline,
+                                        textInputAction:
+                                            TextInputAction.newline,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(width: 14),
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 2),
+                                  child: FilledButton.icon(
+                                    icon: const Icon(Icons.add),
+                                    label: const Text('Add'),
+                                    onPressed: _addCard,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 14),
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.center,
+                              children: [
+                                Icon(
+                                  Icons.sell_outlined,
+                                  size: 16,
+                                  color: SprakTheme.inkSoft,
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: TagSelector(
+                                    deck: deck,
+                                    selected: _newCardTags,
+                                    onChanged: (next) =>
+                                        setState(() => _newCardTags = next),
+                                    onTagCreated: () {
+                                      widget.store.save();
+                                      setState(() {});
+                                    },
+                                  ),
+                                ),
+                              ],
+                            ),
+                            if (_tagSuggestions.isNotEmpty ||
+                                _staleTags.isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 10),
+                                child: _TagSuggestionBox(
+                                  tags: _tagSuggestions,
+                                  stale: _staleTags,
+                                  deck: deck,
+                                  focusNode: _tagsFocus,
+                                  onTap: _acceptTags,
+                                ),
+                              ),
+                            if (_translateError != null)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 8),
+                                child: Text(
+                                  _translateError!,
+                                  style: TextStyle(
+                                    color: Theme.of(context).colorScheme.error,
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
-                const SizedBox(width: 8),
-                Icon(Icons.edit_outlined,
-                    size: 16, color: SprakTheme.inkSoft),
+                // --- Card groups ---
+                if (cardGroups.length > 1)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 0, 24, 12),
+                    child: _CardGroupStrip(
+                      children: [
+                        _CardGroupTile(
+                          label: 'All',
+                          deck: deck,
+                          cards: deck.cards,
+                          selected: _filterGroup == null,
+                          onTap: () => setState(() => _filterGroup = null),
+                        ),
+                        for (final g in cardGroups) ...[
+                          const SizedBox(width: 8),
+                          _CardGroupTile(
+                            label: 'Group $g',
+                            deck: deck,
+                            cards: deck.cardsInGroup(g),
+                            selected: _filterGroup == g,
+                            onTap: () => setState(
+                              () => _filterGroup = _filterGroup == g ? null : g,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                // --- Retention stats ---
+                if (deck.cards.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 0, 24, 10),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        if (_filterGroup != null) ...[
+                          Text(
+                            'Group $_filterGroup',
+                            style: TextStyle(
+                              color: SprakTheme.fjord,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                          const SizedBox(width: 14),
+                        ],
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              MasteryBar(
+                                deck,
+                                height: 7,
+                                counts: masteryCounts,
+                              ),
+                              const SizedBox(height: 6),
+                              _buildMasteryLegend(masteryCounts),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 20),
+                        RetentionLabel(retention),
+                      ],
+                    ),
+                  ),
+                // --- Search + sort bar ---
+                if (deck.cards.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+                    child: Row(
+                      children: [
+                        SizedBox(
+                          width: 220,
+                          height: 36,
+                          child: TextField(
+                            controller: _searchController,
+                            focusNode: _searchFocus,
+                            style: const TextStyle(fontSize: 13),
+                            decoration: InputDecoration(
+                              isDense: true,
+                              hintText: 'Search cards',
+                              hintStyle: TextStyle(
+                                color: SprakTheme.inkSoft,
+                                fontSize: 13,
+                              ),
+                              prefixIcon: Icon(
+                                Icons.search,
+                                size: 18,
+                                color: SprakTheme.inkSoft,
+                              ),
+                              prefixIconConstraints: const BoxConstraints(
+                                minWidth: 34,
+                                minHeight: 34,
+                              ),
+                              suffixIcon: _searchController.text.isEmpty
+                                  ? null
+                                  : IconButton(
+                                      icon: const Icon(Icons.close, size: 16),
+                                      color: SprakTheme.inkSoft,
+                                      onPressed: () {
+                                        _searchController.clear();
+                                        _searchFocus.requestFocus();
+                                      },
+                                    ),
+                              suffixIconConstraints: const BoxConstraints(
+                                minWidth: 34,
+                                minHeight: 34,
+                              ),
+                              contentPadding: EdgeInsets.zero,
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 14),
+                        Text(
+                          _searchController.text.trim().isEmpty &&
+                                  _filterTags.isEmpty &&
+                                  _filterGroup == null
+                              ? '${deck.cards.length} '
+                                    '${deck.cards.length == 1 ? "card" : "cards"}'
+                              : '${visibleCards.length} of '
+                                    '${deck.cards.length} '
+                                    '${deck.cards.length == 1 ? "card" : "cards"}',
+                          style: TextStyle(
+                            color: SprakTheme.inkSoft,
+                            fontSize: 13,
+                          ),
+                        ),
+                        const Spacer(),
+                        PopupMenuButton<_SortMode>(
+                          initialValue: _sortMode,
+                          onSelected: (v) => setState(() => _sortMode = v),
+                          color: SprakTheme.surface,
+                          itemBuilder: (context) => const [
+                            PopupMenuItem(
+                              value: _SortMode.added,
+                              child: Text('Newest first'),
+                            ),
+                            PopupMenuItem(
+                              value: _SortMode.mostMissed,
+                              child: Text('Most missed first'),
+                            ),
+                          ],
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.sort,
+                                size: 18,
+                                color: SprakTheme.inkSoft,
+                              ),
+                              const SizedBox(width: 6),
+                              Text(
+                                _sortMode == _SortMode.added
+                                    ? 'Sort: Newest first'
+                                    : 'Sort: Most missed',
+                                style: TextStyle(
+                                  color: SprakTheme.inkSoft,
+                                  fontSize: 13,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                // --- Tag filter ---
+                if (deck.cards.isNotEmpty && deck.tags.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 0, 24, 10),
+                    child: TagFilterBar(
+                      deck: deck,
+                      selected: _filterTags,
+                      onChanged: (next) => setState(() => _filterTags = next),
+                    ),
+                  ),
+                // --- Card list ---
+                Expanded(
+                  child: deck.cards.isEmpty
+                      ? Center(
+                          child: Text(
+                            'No cards in this set yet.',
+                            style: TextStyle(color: SprakTheme.inkSoft),
+                          ),
+                        )
+                      : visibleCards.isEmpty
+                      ? Center(
+                          child: Text(
+                            _searchController.text.trim().isEmpty
+                                ? _filterTags.isEmpty
+                                      ? 'No cards in this group.'
+                                      : 'No cards carry those tags.'
+                                : 'No cards match your search.',
+                            style: TextStyle(color: SprakTheme.inkSoft),
+                          ),
+                        )
+                      : ListView.separated(
+                          padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+                          itemCount: visibleCards.length,
+                          separatorBuilder: (_, i) => const SizedBox(height: 8),
+                          itemBuilder: (context, i) {
+                            final card = visibleCards[i];
+                            final isDuplicate = duplicateIds.contains(card.id);
+                            return Card(
+                              shape: isDuplicate
+                                  ? RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(12),
+                                      side: BorderSide(
+                                        color: SprakTheme.warning,
+                                        width: 1.5,
+                                      ),
+                                    )
+                                  : null,
+                              child: ListTile(
+                                contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 4,
+                                ),
+                                leading: deck.isLanguage
+                                    ? IconButton(
+                                        icon: const Icon(
+                                          Icons.volume_up_outlined,
+                                        ),
+                                        color: SprakTheme.fjord,
+                                        tooltip: 'Play audio',
+                                        onPressed: () => TtsService().speak(
+                                          card.target,
+                                          ttsLocaleFor(deck.targetLanguage),
+                                        ),
+                                      )
+                                    : null,
+                                title: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Flexible(
+                                      child: TexText(
+                                        card.target,
+                                        style: SprakTheme.vocab(size: 20),
+                                      ),
+                                    ),
+                                    if (isDuplicate) ...[
+                                      const SizedBox(width: 8),
+                                      Tooltip(
+                                        message:
+                                            'Another card has the same '
+                                            '${deck.nativeLabel} / '
+                                            '${deck.targetLabel}',
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 6,
+                                            vertical: 2,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: SprakTheme.warning
+                                                .withValues(alpha: 0.15),
+                                            borderRadius: BorderRadius.circular(
+                                              999,
+                                            ),
+                                          ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Icon(
+                                                Icons.warning_amber_rounded,
+                                                size: 13,
+                                                color: SprakTheme.warning,
+                                              ),
+                                              const SizedBox(width: 3),
+                                              Text(
+                                                'Duplicate',
+                                                style: TextStyle(
+                                                  color: SprakTheme.warning,
+                                                  fontSize: 11,
+                                                  fontWeight: FontWeight.w700,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                                subtitle: Padding(
+                                  padding: const EdgeInsets.only(top: 2),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      TexText(
+                                        card.native,
+                                        style: TextStyle(
+                                          color: SprakTheme.inkSoft,
+                                        ),
+                                      ),
+                                      if (card.notes.isNotEmpty)
+                                        Padding(
+                                          padding: const EdgeInsets.only(
+                                            top: 6,
+                                          ),
+                                          child: CardNote(card.notes),
+                                        ),
+                                      if (card.tags.isNotEmpty)
+                                        Padding(
+                                          padding: const EdgeInsets.only(
+                                            top: 6,
+                                          ),
+                                          child: TagChips(card.tags),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                                trailing: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Tooltip(
+                                      message: masteryTooltip(card),
+                                      child: Container(
+                                        width: 9,
+                                        height: 9,
+                                        decoration: BoxDecoration(
+                                          shape: BoxShape.circle,
+                                          color: masteryColor(card.mastery),
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 12),
+                                    _StatChip(
+                                      icon: Icons.check,
+                                      color: SprakTheme.success,
+                                      count: card.timesCorrect,
+                                      tooltip:
+                                          'Answered correctly '
+                                          '${card.timesCorrect} times',
+                                    ),
+                                    const SizedBox(width: 6),
+                                    _StatChip(
+                                      icon: Icons.close,
+                                      color: SprakTheme.danger,
+                                      count: card.timesWrong,
+                                      tooltip:
+                                          'Answered incorrectly '
+                                          '${card.timesWrong} times',
+                                    ),
+                                    const SizedBox(width: 10),
+                                    IconButton(
+                                      icon: const Icon(
+                                        Icons.edit_outlined,
+                                        size: 20,
+                                      ),
+                                      color: SprakTheme.inkSoft,
+                                      tooltip: 'Edit card',
+                                      onPressed: () => _editCard(card),
+                                    ),
+                                    IconButton(
+                                      icon: const Icon(
+                                        Icons.delete_outline,
+                                        size: 20,
+                                      ),
+                                      color: SprakTheme.inkSoft,
+                                      tooltip: 'Remove card',
+                                      onPressed: () async {
+                                        deck.cards.removeWhere(
+                                          (c) => c.id == card.id,
+                                        );
+                                        await widget.store.save();
+                                        setState(() {});
+                                      },
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                ),
               ],
             ),
           ),
         ),
-        actions: [
-          FilledButton.tonalIcon(
-            icon: const Icon(Icons.sell_outlined, size: 18),
-            label: const Text('Tags'),
-            onPressed: _manageTags,
-          ),
-          const SizedBox(width: 10),
-          FilledButton.tonalIcon(
-            icon: const Icon(Icons.auto_awesome, size: 18),
-            label: const Text('Edit with AI'),
-            onPressed: _openAiEdit,
-          ),
-          const SizedBox(width: 10),
-          FilledButton.tonalIcon(
-            icon: const Icon(Icons.school_outlined, size: 18),
-            label: const Text('Learn'),
-            onPressed: deck.cards.isEmpty
-                ? null
-                : () => startLearning(context, widget.store, deck,
-                    initialTags: _filterTags),
-          ),
-          const SizedBox(width: 16),
-        ],
       ),
-      body: Align(
-        alignment: Alignment.topCenter,
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 1100),
-          child: Column(
-            children: [
-              // --- Add-card panel with auto-translation ---
-              Padding(
-                padding: const EdgeInsets.fromLTRB(24, 8, 24, 16),
-                child: Card(
-                  child: Focus(
-                    canRequestFocus: false,
-                    onKeyEvent: _handlePanelKey,
-                    child: Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Add a word or phrase',
-                            style: Theme.of(context).textTheme.titleLarge),
-                        const SizedBox(height: 4),
-                        Text(
-                          deck.isLanguage
-                              ? 'Type in either language and press Enter to '
-                                  'translate. If you typed an inflected '
-                                  'form, the dictionary form is suggested '
-                                  'under your field, and fitting tags below. '
-                                  'Enter accepts the suggestions, and once '
-                                  'more adds the card.'
-                              : 'Type either side and press Enter to have '
-                                  'AI fill in the other and suggest tags. '
-                                  'Use \$…\$ for LaTeX. Enter accepts the '
-                                  'suggestions, and once more adds the card.',
-                          style: TextStyle(
-                              color: SprakTheme.inkSoft, fontSize: 13),
-                        ),
-                        const SizedBox(height: 16),
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment:
-                                    CrossAxisAlignment.stretch,
-                                children: [
-                                  Row(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      // Language decks read native →
-                                      // target; other decks read Front →
-                                      // Back (target → native).
-                                      Expanded(
-                                        child: _addField(
-                                            isNative: deck.isLanguage),
-                                      ),
-                                      Padding(
-                                        padding: const EdgeInsets.symmetric(
-                                            horizontal: 10, vertical: 14),
-                                        child: _translating
-                                            ? const SizedBox(
-                                                width: 22,
-                                                height: 22,
-                                                child:
-                                                    CircularProgressIndicator(
-                                                        strokeWidth: 2.5),
-                                              )
-                                            : Icon(Icons.swap_horiz,
-                                                color: SprakTheme.inkSoft),
-                                      ),
-                                      Expanded(
-                                        child: _addField(
-                                            isNative: !deck.isLanguage),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 12),
-                                  // Notes sit under both sides, spanning
-                                  // their full width.
-                                  TextField(
-                                    controller: _notesController,
-                                    style: const TextStyle(fontSize: 13),
-                                    decoration: InputDecoration(
-                                      labelText: 'Notes (optional)',
-                                      alignLabelWithHint: true,
-                                      hintText: 'Meaning, usage, example '
-                                          'sentence…',
-                                      hintStyle: TextStyle(
-                                          color: SprakTheme.inkSoft,
-                                          fontSize: 13),
-                                    ),
-                                    minLines: 3,
-                                    maxLines: 6,
-                                    // Prose field: Enter adds a line
-                                    // instead of adding the card.
-                                    keyboardType: TextInputType.multiline,
-                                    textInputAction: TextInputAction.newline,
-                                  ),
-                                ],
-                              ),
-                            ),
-                            const SizedBox(width: 14),
-                            Padding(
-                              padding: const EdgeInsets.only(top: 2),
-                              child: FilledButton.icon(
-                                icon: const Icon(Icons.add),
-                                label: const Text('Add'),
-                                onPressed: _addCard,
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 14),
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.center,
-                          children: [
-                            Icon(Icons.sell_outlined,
-                                size: 16, color: SprakTheme.inkSoft),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: TagSelector(
-                                deck: deck,
-                                selected: _newCardTags,
-                                onChanged: (next) =>
-                                    setState(() => _newCardTags = next),
-                                onTagCreated: () {
-                                  widget.store.save();
-                                  setState(() {});
-                                },
-                              ),
-                            ),
-                          ],
-                        ),
-                        if (_tagSuggestions.isNotEmpty ||
-                            _staleTags.isNotEmpty)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 10),
-                            child: _TagSuggestionBox(
-                              tags: _tagSuggestions,
-                              stale: _staleTags,
-                              deck: deck,
-                              focusNode: _tagsFocus,
-                              onTap: _acceptTags,
-                            ),
-                          ),
-                        if (_translateError != null)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 8),
-                            child: Text(_translateError!,
-                                style: TextStyle(
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .error)),
-                          ),
-                      ],
-                    ),
-                    ),
-                  ),
-                ),
-              ),
-              // --- Retention stats ---
-              if (deck.cards.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(24, 0, 24, 10),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            MasteryBar(deck,
-                                height: 7, counts: masteryCounts),
-                            const SizedBox(height: 6),
-                            _buildMasteryLegend(masteryCounts),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(width: 20),
-                      RetentionLabel(retention),
-                    ],
-                  ),
-                ),
-              // --- Search + sort bar ---
-              if (deck.cards.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
-                  child: Row(
-                    children: [
-                      SizedBox(
-                        width: 220,
-                        height: 36,
-                        child: TextField(
-                          controller: _searchController,
-                          focusNode: _searchFocus,
-                          style: const TextStyle(fontSize: 13),
-                          decoration: InputDecoration(
-                            isDense: true,
-                            hintText: 'Search cards',
-                            hintStyle: TextStyle(
-                                color: SprakTheme.inkSoft, fontSize: 13),
-                            prefixIcon: Icon(Icons.search,
-                                size: 18, color: SprakTheme.inkSoft),
-                            prefixIconConstraints: const BoxConstraints(
-                                minWidth: 34, minHeight: 34),
-                            suffixIcon: _searchController.text.isEmpty
-                                ? null
-                                : IconButton(
-                                    icon: const Icon(Icons.close, size: 16),
-                                    color: SprakTheme.inkSoft,
-                                    onPressed: () {
-                                      _searchController.clear();
-                                      _searchFocus.requestFocus();
-                                    },
-                                  ),
-                            suffixIconConstraints: const BoxConstraints(
-                                minWidth: 34, minHeight: 34),
-                            contentPadding: EdgeInsets.zero,
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 14),
-                      Text(
-                        _searchController.text.trim().isEmpty &&
-                                _filterTags.isEmpty
-                            ? '${deck.cards.length} '
-                                '${deck.cards.length == 1 ? "card" : "cards"}'
-                            : '${visibleCards.length} of '
-                                '${deck.cards.length} '
-                                '${deck.cards.length == 1 ? "card" : "cards"}',
-                        style: TextStyle(
-                            color: SprakTheme.inkSoft, fontSize: 13),
-                      ),
-                      const Spacer(),
-                      PopupMenuButton<_SortMode>(
-                        initialValue: _sortMode,
-                        onSelected: (v) => setState(() => _sortMode = v),
-                        color: SprakTheme.surface,
-                        itemBuilder: (context) => const [
-                          PopupMenuItem(
-                            value: _SortMode.added,
-                            child: Text('Newest first'),
-                          ),
-                          PopupMenuItem(
-                            value: _SortMode.mostMissed,
-                            child: Text('Most missed first'),
-                          ),
-                        ],
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.sort,
-                                size: 18, color: SprakTheme.inkSoft),
-                            const SizedBox(width: 6),
-                            Text(
-                              _sortMode == _SortMode.added
-                                  ? 'Sort: Newest first'
-                                  : 'Sort: Most missed',
-                              style: TextStyle(
-                                  color: SprakTheme.inkSoft, fontSize: 13),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              // --- Tag filter ---
-              if (deck.cards.isNotEmpty && deck.tags.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(24, 0, 24, 10),
-                  child: TagFilterBar(
-                    deck: deck,
-                    selected: _filterTags,
-                    onChanged: (next) => setState(() => _filterTags = next),
-                  ),
-                ),
-              // --- Card list ---
-              Expanded(
-                child: deck.cards.isEmpty
-                    ? Center(
-                        child: Text('No cards in this set yet.',
-                            style: TextStyle(color: SprakTheme.inkSoft)),
-                      )
-                    : visibleCards.isEmpty
-                        ? Center(
-                            child: Text(
-                                _searchController.text.trim().isEmpty
-                                    ? 'No cards carry those tags.'
-                                    : 'No cards match your search.',
-                                style: TextStyle(color: SprakTheme.inkSoft)),
-                          )
-                        : ListView.separated(
-                        padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
-                        itemCount: visibleCards.length,
-                        separatorBuilder: (_, i) =>
-                            const SizedBox(height: 8),
-                        itemBuilder: (context, i) {
-                          final card = visibleCards[i];
-                          final isDuplicate =
-                              duplicateIds.contains(card.id);
-                          return Card(
-                            shape: isDuplicate
-                                ? RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(12),
-                                    side: BorderSide(
-                                        color: SprakTheme.warning, width: 1.5),
-                                  )
-                                : null,
-                            child: ListTile(
-                              contentPadding: const EdgeInsets.symmetric(
-                                  horizontal: 12, vertical: 4),
-                              leading: deck.isLanguage
-                                  ? IconButton(
-                                      icon: const Icon(
-                                          Icons.volume_up_outlined),
-                                      color: SprakTheme.fjord,
-                                      tooltip: 'Play audio',
-                                      onPressed: () => TtsService().speak(
-                                          card.target,
-                                          ttsLocaleFor(
-                                              deck.targetLanguage)),
-                                    )
-                                  : null,
-                              title: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Flexible(
-                                    child: TexText(card.target,
-                                        style: SprakTheme.vocab(size: 20)),
-                                  ),
-                                  if (isDuplicate) ...[
-                                    const SizedBox(width: 8),
-                                    Tooltip(
-                                      message: 'Another card has the same '
-                                          '${deck.nativeLabel} / '
-                                          '${deck.targetLabel}',
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(
-                                            horizontal: 6, vertical: 2),
-                                        decoration: BoxDecoration(
-                                          color: SprakTheme.warning
-                                              .withValues(alpha: 0.15),
-                                          borderRadius:
-                                              BorderRadius.circular(999),
-                                        ),
-                                        child: Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            Icon(Icons.warning_amber_rounded,
-                                                size: 13,
-                                                color: SprakTheme.warning),
-                                            const SizedBox(width: 3),
-                                            Text('Duplicate',
-                                                style: TextStyle(
-                                                    color: SprakTheme.warning,
-                                                    fontSize: 11,
-                                                    fontWeight:
-                                                        FontWeight.w700)),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ],
-                              ),
-                              subtitle: Padding(
-                                padding: const EdgeInsets.only(top: 2),
-                                child: Column(
-                                  crossAxisAlignment:
-                                      CrossAxisAlignment.start,
-                                  children: [
-                                    TexText(card.native,
-                                        style: TextStyle(
-                                            color: SprakTheme.inkSoft)),
-                                    if (card.notes.isNotEmpty)
-                                      Padding(
-                                        padding:
-                                            const EdgeInsets.only(top: 6),
-                                        child: CardNote(card.notes),
-                                      ),
-                                    if (card.tags.isNotEmpty)
-                                      Padding(
-                                        padding:
-                                            const EdgeInsets.only(top: 6),
-                                        child: TagChips(card.tags),
-                                      ),
-                                  ],
-                                ),
-                              ),
-                              trailing: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Tooltip(
-                                    message: masteryTooltip(card),
-                                    child: Container(
-                                      width: 9,
-                                      height: 9,
-                                      decoration: BoxDecoration(
-                                        shape: BoxShape.circle,
-                                        color: masteryColor(card.mastery),
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  _StatChip(
-                                    icon: Icons.check,
-                                    color: SprakTheme.success,
-                                    count: card.timesCorrect,
-                                    tooltip: 'Answered correctly '
-                                        '${card.timesCorrect} times',
-                                  ),
-                                  const SizedBox(width: 6),
-                                  _StatChip(
-                                    icon: Icons.close,
-                                    color: SprakTheme.danger,
-                                    count: card.timesWrong,
-                                    tooltip: 'Answered incorrectly '
-                                        '${card.timesWrong} times',
-                                  ),
-                                  const SizedBox(width: 10),
-                                  IconButton(
-                                    icon: const Icon(Icons.edit_outlined,
-                                        size: 20),
-                                    color: SprakTheme.inkSoft,
-                                    tooltip: 'Edit card',
-                                    onPressed: () => _editCard(card),
-                                  ),
-                                  IconButton(
-                                    icon: const Icon(Icons.delete_outline,
-                                        size: 20),
-                                    color: SprakTheme.inkSoft,
-                                    tooltip: 'Remove card',
-                                    onPressed: () async {
-                                      deck.cards.removeWhere(
-                                          (c) => c.id == card.id);
-                                      await widget.store.save();
-                                      setState(() {});
-                                    },
-                                  ),
-                                ],
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-              ),
-            ],
+    );
+  }
+}
+
+/// The horizontal row of card-group tiles. A plain horizontal list can't
+/// be reached past the window edge with a mouse — it ignores mouse drags
+/// and the vertical wheel — so this shows a draggable scrollbar, lets the
+/// mouse drag the row, and turns wheel scrolling sideways.
+class _CardGroupStrip extends StatefulWidget {
+  final List<Widget> children;
+
+  const _CardGroupStrip({required this.children});
+
+  @override
+  State<_CardGroupStrip> createState() => _CardGroupStripState();
+}
+
+class _CardGroupStripState extends State<_CardGroupStrip> {
+  final _scroll = ScrollController();
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  void _onPointerSignal(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent || !_scroll.hasClients) return;
+    // Trackpads already scroll sideways; only redirect a vertical wheel.
+    final delta = event.scrollDelta.dx != 0
+        ? event.scrollDelta.dx
+        : event.scrollDelta.dy;
+    if (delta == 0) return;
+    GestureBinding.instance.pointerSignalResolver.register(event, (_) {
+      final pos = _scroll.position;
+      _scroll.jumpTo(
+        (pos.pixels + delta).clamp(pos.minScrollExtent, pos.maxScrollExtent),
+      );
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Listener(
+      onPointerSignal: _onPointerSignal,
+      child: ScrollConfiguration(
+        behavior: ScrollConfiguration.of(context).copyWith(
+          dragDevices: PointerDeviceKind.values.toSet(),
+          scrollbars: false,
+        ),
+        child: Scrollbar(
+          controller: _scroll,
+          thumbVisibility: true,
+          interactive: true,
+          child: SizedBox(
+            // Room under the tiles for the scrollbar thumb.
+            height: 64,
+            child: ListView(
+              controller: _scroll,
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.only(bottom: 12),
+              children: widget.children,
+            ),
           ),
         ),
       ),
+    );
+  }
+}
+
+/// One card group in the picker above the stats: its label and size over
+/// a thin mastery bar for just its cards. Tapping narrows the card list
+/// and the stats to the group.
+class _CardGroupTile extends StatelessWidget {
+  final String label;
+  final Deck deck;
+  final List<CardItem> cards;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _CardGroupTile({
+    required this.label,
+    required this.deck,
+    required this.cards,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: selected
+          ? SprakTheme.fjord.withValues(alpha: 0.12)
+          : SprakTheme.panel,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: onTap,
+        child: Container(
+          width: 104,
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: selected ? SprakTheme.fjord : SprakTheme.line,
+              width: selected ? 1.5 : 1,
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Row(
+                children: [
+                  Text(
+                    label,
+                    style: TextStyle(
+                      color: selected ? SprakTheme.fjord : SprakTheme.ink,
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const Spacer(),
+                  Text(
+                    '${cards.length}',
+                    style: TextStyle(color: SprakTheme.inkSoft, fontSize: 11.5),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              MasteryBar(deck, height: 5, counts: Deck.masteryCountsOf(cards)),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1204,8 +1478,7 @@ class _SuggestionBox extends StatelessWidget {
         focusColor: SprakTheme.fjord.withValues(alpha: 0.15),
         onTap: onTap,
         child: Container(
-          padding:
-              const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(12),
             border: Border.all(color: SprakTheme.line),
@@ -1221,9 +1494,10 @@ class _SuggestionBox extends StatelessWidget {
                     Text(
                       label,
                       style: TextStyle(
-                          color: SprakTheme.inkSoft,
-                          fontSize: 11,
-                          letterSpacing: 0.5),
+                        color: SprakTheme.inkSoft,
+                        fontSize: 11,
+                        letterSpacing: 0.5,
+                      ),
                     ),
                     TexText(value, style: SprakTheme.vocab(size: 17)),
                   ],
@@ -1231,8 +1505,7 @@ class _SuggestionBox extends StatelessWidget {
               ),
               Text(
                 '⏎ to insert',
-                style:
-                    TextStyle(color: SprakTheme.inkSoft, fontSize: 12),
+                style: TextStyle(color: SprakTheme.inkSoft, fontSize: 12),
               ),
             ],
           ),
@@ -1289,9 +1562,10 @@ class _TagSuggestionBox extends StatelessWidget {
                     Text(
                       tags.isEmpty ? 'Tags to remove' : 'Suggested tags',
                       style: TextStyle(
-                          color: SprakTheme.inkSoft,
-                          fontSize: 11,
-                          letterSpacing: 0.5),
+                        color: SprakTheme.inkSoft,
+                        fontSize: 11,
+                        letterSpacing: 0.5,
+                      ),
                     ),
                     const SizedBox(height: 4),
                     Wrap(

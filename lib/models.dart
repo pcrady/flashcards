@@ -85,6 +85,10 @@ class CardItem {
   /// are not recorded).
   final List<CardReview> reviews;
 
+  /// Which numbered card group of [Deck.cardGroupSize] cards this card
+  /// belongs to, counting from 1. Null until the deck assigns one.
+  int? group;
+
   CardItem({
     String? id,
     required this.native,
@@ -92,6 +96,7 @@ class CardItem {
     this.timesCorrect = 0,
     this.timesWrong = 0,
     this.notes = '',
+    this.group,
     List<String>? tags,
     List<CardReview>? reviews,
   })  : id = id ?? _uuid.v4(),
@@ -153,6 +158,7 @@ class CardItem {
         'timesWrong': timesWrong,
         if (notes.isNotEmpty) 'notes': notes,
         if (tags.isNotEmpty) 'tags': tags,
+        if (group != null) 'group': group,
         if (reviews.isNotEmpty)
           'reviews': reviews.map((r) => r.toJson()).toList(),
       };
@@ -164,6 +170,7 @@ class CardItem {
         timesCorrect: json['timesCorrect'] as int? ?? 0,
         timesWrong: json['timesWrong'] as int? ?? 0,
         notes: json['notes'] as String? ?? '',
+        group: json['group'] as int?,
         tags: [
           for (final t in json['tags'] as List<dynamic>? ?? []) t as String,
         ],
@@ -368,7 +375,10 @@ class Deck {
   /// True retention over the last 30 days: of first attempts on cards the
   /// learner had already studied in an earlier sitting (12h+ before), the
   /// share answered correctly. Null until there are re-encounters.
-  double? get retention {
+  double? get retention => retentionOf(cards);
+
+  /// [retention] over just [cards] — e.g. one card group.
+  static double? retentionOf(Iterable<CardItem> cards) {
     var seen = 0, correct = 0;
     final cutoff = DateTime.now().subtract(const Duration(days: 30));
     for (final card in cards) {
@@ -472,10 +482,14 @@ class Deck {
 
   /// The cards a tag filter selects: every card when [tags] is empty,
   /// otherwise the cards carrying at least one of them (any, not all).
-  /// Deck order is preserved.
-  List<CardItem> cardsWithAnyTag(List<String> tags) {
-    if (tags.isEmpty) return List.of(cards);
-    return cards.where((c) => tags.any(c.tags.contains)).toList();
+  /// A [group] narrows further to that card group. Deck order is
+  /// preserved.
+  List<CardItem> cardsWithAnyTag(List<String> tags, {int? group}) {
+    return cards
+        .where((c) =>
+            (group == null || c.group == group) &&
+            (tags.isEmpty || tags.any(c.tags.contains)))
+        .toList();
   }
 
   /// [tags] with anything the deck no longer defines dropped — a filter
@@ -490,12 +504,56 @@ class Deck {
     return cards.where((c) => c.tags.contains(tag)).length;
   }
 
-  Map<Mastery, int> get masteryCounts {
+  Map<Mastery, int> get masteryCounts => masteryCountsOf(cards);
+
+  /// [masteryCounts] over just [cards] — e.g. one card group.
+  static Map<Mastery, int> masteryCountsOf(Iterable<CardItem> cards) {
     final counts = {for (final m in Mastery.values) m: 0};
     for (final c in cards) {
       counts[c.mastery] = counts[c.mastery]! + 1;
     }
     return counts;
+  }
+
+  /// Cards per numbered card group.
+  static const cardGroupSize = 25;
+
+  /// The card group numbers in use, ascending. A deck of 113 cards has
+  /// groups 1–5.
+  List<int> get cardGroups =>
+      {for (final c in cards) if (c.group != null) c.group!}.toList()..sort();
+
+  /// The cards in card group [group], in deck order.
+  List<CardItem> cardsInGroup(int group) =>
+      cards.where((c) => c.group == group).toList();
+
+  /// Adds [card] to the deck, placing it in the lowest-numbered card group
+  /// that still has room.
+  void addCard(CardItem card) {
+    card.group = null;
+    cards.add(card);
+    assignCardGroups();
+  }
+
+  /// Gives every card without a group a place in the lowest-numbered card
+  /// group that still has room, so new cards fill the incomplete group
+  /// before a new one is started. Cards already grouped never move — a
+  /// group keeps its cards (and its stats) when others are added or
+  /// removed.
+  void assignCardGroups() {
+    final counts = <int, int>{};
+    for (final c in cards) {
+      if (c.group != null) counts[c.group!] = (counts[c.group!] ?? 0) + 1;
+    }
+    var next = 1;
+    for (final c in cards) {
+      if (c.group != null) continue;
+      while ((counts[next] ?? 0) >= cardGroupSize) {
+        next++;
+      }
+      c.group = next;
+      counts[next] = (counts[next] ?? 0) + 1;
+    }
   }
 
   Deck({
@@ -510,7 +568,11 @@ class Deck {
     this.folderId,
   })  : id = id ?? _uuid.v4(),
         cards = cards ?? [],
-        tags = tags ?? [];
+        tags = tags ?? [] {
+    // Decks saved before card groups existed are grouped in the order
+    // their cards were added.
+    assignCardGroups();
+  }
 
   Map<String, dynamic> toJson() => {
         'id': id,

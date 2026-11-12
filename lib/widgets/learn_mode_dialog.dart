@@ -14,17 +14,21 @@ import 'tag_chips.dart';
 /// session, whose card set is already fixed, so the tag filter is ignored
 /// there.
 ///
-/// [initialTags] seeds the tag filter, so a deck list already narrowed on
-/// screen studies the same slice without picking the tags twice.
+/// [initialTags] and [initialGroup] seed the tag and card-group filters,
+/// so a deck list already narrowed on screen studies the same slice
+/// without picking it twice.
 Future<void> startLearning(
   BuildContext context,
   DeckStore store,
   Deck deck, {
   List<String> initialTags = const [],
+  int? initialGroup,
 }) async {
   if (deck.cards.isEmpty) return;
 
   var tags = deck.keepKnownTags(initialTags);
+  final cardGroups = deck.cardGroups;
+  int? cardGroup = cardGroups.contains(initialGroup) ? initialGroup : null;
   final session = deck.session;
   final prefs = await SharedPreferences.getInstance();
   var groupSize = prefs.getInt(kGroupSizePref) ?? kDefaultGroupSize;
@@ -33,8 +37,9 @@ Future<void> startLearning(
     context: context,
     builder: (context) => StatefulBuilder(
       builder: (context, setState) {
-        final pool = deck.cardsWithAnyTag(tags);
+        final pool = deck.cardsWithAnyTag(tags, group: cardGroup);
         final canStart = pool.isNotEmpty;
+        final narrowed = tags.isNotEmpty || cardGroup != null;
         return AlertDialog(
           title: Text('Study “${deck.name}”'),
           content: SizedBox(
@@ -43,6 +48,32 @@ Future<void> startLearning(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                if (cardGroups.length > 1) ...[
+                  Row(
+                    children: [
+                      Text('Card group',
+                          style: TextStyle(
+                              color: SprakTheme.inkSoft, fontSize: 13)),
+                      const SizedBox(width: 12),
+                      DropdownButton<int?>(
+                        value: cardGroup,
+                        isDense: true,
+                        items: [
+                          const DropdownMenuItem(
+                              value: null, child: Text('All cards')),
+                          for (final g in cardGroups)
+                            DropdownMenuItem(
+                              value: g,
+                              child: Text('Group $g  '
+                                  '(${deck.cardsInGroup(g).length})'),
+                            ),
+                        ],
+                        onChanged: (g) => setState(() => cardGroup = g),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                ],
                 if (deck.tags.isNotEmpty) ...[
                   TagFilterBar(
                     deck: deck,
@@ -51,12 +82,16 @@ Future<void> startLearning(
                     onChanged: (next) => setState(() => tags = next),
                   ),
                   const SizedBox(height: 8),
+                ],
+                if (narrowed) ...[
                   Text(
                     canStart
                         ? '${pool.length} of ${deck.cards.length} '
                             '${deck.cards.length == 1 ? "card" : "cards"} '
                             'selected.'
-                        : 'No cards carry those tags.',
+                        : cardGroup != null && tags.isEmpty
+                            ? 'No cards in that group.'
+                            : 'No cards match that selection.',
                     style: TextStyle(
                       color: canStart
                           ? SprakTheme.inkSoft
@@ -92,7 +127,7 @@ Future<void> startLearning(
                 const SizedBox(height: 10),
                 _ModeTile(
                   icon: Icons.shuffle,
-                  title: tags.isEmpty ? 'Whole deck' : 'Every selected card',
+                  title: narrowed ? 'Every selected card' : 'Whole deck',
                   subtitle: 'Shuffled into groups of $groupSize.',
                   enabled: canStart,
                   onTap: () => Navigator.pop(context, QuizMode.whole),
@@ -334,6 +369,7 @@ Future<void> startLearning(
           direction: direction,
           mistakeFraction: mistakeFraction,
           tags: tags,
+          cardGroup: cardGroup,
           groupSize: groupSize),
     ),
   );
