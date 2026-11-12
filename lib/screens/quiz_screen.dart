@@ -169,6 +169,11 @@ class _QuizScreenState extends State<QuizScreen> {
   int? _selectedChoice;
   final _choiceFocus = FocusNode();
 
+  /// Flash-card style: whether the current card has been flipped to show
+  /// its answer, and the focus that carries its keyboard shortcuts.
+  bool _revealed = false;
+  final _flashFocus = FocusNode();
+
   /// Keyboard focus for the group/deck-cleared screens, so Enter advances
   /// there too after the chat panel has held focus.
   final _clearedFocus = FocusNode();
@@ -196,6 +201,7 @@ class _QuizScreenState extends State<QuizScreen> {
   CardItem get card => _task.card;
   bool get _askInTarget => _task.askInTarget;
   bool get _isChoice => _task.isChoice;
+  bool get _isFlash => _style == QuizStyle.flashcard;
   String get prompt => _askInTarget ? card.target : card.native;
   String get expected => _askInTarget ? card.native : card.target;
 
@@ -243,6 +249,7 @@ class _QuizScreenState extends State<QuizScreen> {
     _answerController.dispose();
     _answerFocus.dispose();
     _choiceFocus.dispose();
+    _flashFocus.dispose();
     _clearedFocus.dispose();
     TtsService().stop();
     final original = _originalLayoutId;
@@ -254,9 +261,10 @@ class _QuizScreenState extends State<QuizScreen> {
   /// multiple choice, the right OS keyboard for typing.
   void _beginTask() {
     if (_remaining.isEmpty) return;
+    _revealed = false;
     if (_isChoice) {
       _choices = _buildChoices();
-    } else {
+    } else if (!_isFlash) {
       _syncKeyboard();
     }
     _maybeSpeakPrompt();
@@ -353,7 +361,12 @@ class _QuizScreenState extends State<QuizScreen> {
       return;
     }
     if (_remaining.isEmpty) return;
-    (_isChoice ? _choiceFocus : _answerFocus).requestFocus();
+    (_isFlash
+            ? _flashFocus
+            : _isChoice
+                ? _choiceFocus
+                : _answerFocus)
+        .requestFocus();
   }
 
   /// The correct answer plus distractors pulled from the rest of the deck
@@ -581,6 +594,16 @@ class _QuizScreenState extends State<QuizScreen> {
     // Which sides get asked: askInTarget=true shows the target/front side.
     final askFront = _direction != QuizDirection.back;
     final askBack = _direction != QuizDirection.front;
+    if (_isFlash) {
+      _remaining = [
+        for (final c in _group) ...[
+          if (askFront) (card: c, askInTarget: true, isChoice: false),
+          if (askBack) (card: c, askInTarget: false, isChoice: false),
+        ],
+      ]..shuffle(_random);
+      _groupOrder = List.of(_remaining);
+      return;
+    }
     _remaining = [
       for (final c in _group) ...[
         // Multiple choice: recognize the target-language word. In pure
@@ -682,14 +705,35 @@ class _QuizScreenState extends State<QuizScreen> {
       }
     });
     widget.store.save();
-    // Let the learner hear the target-language side and then the note
-    // shown with it, unless auto-play is switched off.
+    // Flash cards already spoke when flipped, and move straight on.
+    if (!_isFlash) _speakAnswer();
+  }
+
+  /// Lets the learner hear the target-language side and then the note
+  /// shown with it, unless auto-play is switched off.
+  void _speakAnswer() {
     if (deck.isLanguage && _autoSpeak) {
       TtsService().speakAll([
         (text: card.target, locale: ttsLocaleFor(deck.targetLanguage)),
         ..._noteUtterances,
       ]);
     }
+  }
+
+  /// Flash card: flips the card to show the answer.
+  void _revealFlash() {
+    if (_phase != _Phase.asking || _revealed) return;
+    setState(() => _revealed = true);
+    _speakAnswer();
+    _flashFocus.requestFocus();
+  }
+
+  /// Flash card: the learner's own verdict. Counts like any other answer
+  /// (a miss comes back around later in the group), then moves on.
+  void _gradeFlash(bool knew) {
+    if (_phase != _Phase.asking || !_revealed) return;
+    _finishTask(knew);
+    _next();
   }
 
   /// "I was right" override: e.g. the answer was "I'm getting ready" and
@@ -1146,6 +1190,26 @@ class _QuizScreenState extends State<QuizScreen> {
     );
   }
 
+  String get _questionLabel {
+    if (_isFlash) {
+      if (!deck.isLanguage) {
+        return _askInTarget
+            ? 'Do you know the answer?'
+            : 'Do you know the question?';
+      }
+      return _askInTarget
+          ? 'Do you know what this means in ${deck.nativeLanguage}?'
+          : 'Do you know how to say this in ${deck.targetLanguage}?';
+    }
+    return deck.isLanguage
+        ? (_askInTarget
+            ? 'What does this mean in ${deck.nativeLanguage}?'
+            : 'How do you say this in ${deck.targetLanguage}?')
+        : (_askInTarget
+            ? 'What is the answer?'
+            : 'What question has this answer?');
+  }
+
   Widget _buildQuestion(BuildContext context) {
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
@@ -1154,13 +1218,7 @@ class _QuizScreenState extends State<QuizScreen> {
         _buildGroupDots(),
         const SizedBox(height: 20),
         Text(
-          deck.isLanguage
-              ? (_askInTarget
-                  ? 'What does this mean in ${deck.nativeLanguage}?'
-                  : 'How do you say this in ${deck.targetLanguage}?')
-              : (_askInTarget
-                  ? 'What is the answer?'
-                  : 'What question has this answer?'),
+          _questionLabel,
           textAlign: TextAlign.center,
           style: TextStyle(
             color: SprakTheme.inkSoft,
@@ -1205,7 +1263,9 @@ class _QuizScreenState extends State<QuizScreen> {
           ],
         ),
         const SizedBox(height: 30),
-        if (_isChoice)
+        if (_isFlash)
+          _buildFlashCard(context)
+        else if (_isChoice)
           _buildChoiceOptions(context)
         else ...[
           TextField(
@@ -1252,8 +1312,10 @@ class _QuizScreenState extends State<QuizScreen> {
             },
           ),
         ],
-        const SizedBox(height: 20),
-        if (_phase == _Phase.asking)
+        if (!_isFlash) const SizedBox(height: 20),
+        if (_isFlash)
+          const SizedBox.shrink()
+        else if (_phase == _Phase.asking)
           _isChoice
               ? const SizedBox.shrink()
               : FilledButton(
@@ -1373,6 +1435,129 @@ class _QuizScreenState extends State<QuizScreen> {
           ),
         ],
       ],
+    );
+  }
+
+  /// Flash card: a "Show answer" button until flipped, then the answer
+  /// with "Didn't know" / "Knew it". Space or Enter flips; after that
+  /// 1 / ← means didn't know and 2 / → means knew it.
+  Widget _buildFlashCard(BuildContext context) {
+    final error = Theme.of(context).colorScheme.error;
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.space): _revealFlash,
+        const SingleActivator(LogicalKeyboardKey.enter): _revealFlash,
+        const SingleActivator(LogicalKeyboardKey.numpadEnter): _revealFlash,
+        const SingleActivator(LogicalKeyboardKey.digit1): () =>
+            _gradeFlash(false),
+        const SingleActivator(LogicalKeyboardKey.arrowLeft): () =>
+            _gradeFlash(false),
+        const SingleActivator(LogicalKeyboardKey.digit2): () =>
+            _gradeFlash(true),
+        const SingleActivator(LogicalKeyboardKey.arrowRight): () =>
+            _gradeFlash(true),
+      },
+      child: Focus(
+        focusNode: _flashFocus,
+        autofocus: true,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (!_revealed) ...[
+              FilledButton.icon(
+                onPressed: _revealFlash,
+                icon: const Icon(Icons.flip, size: 18),
+                label: const Text('Show answer'),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(top: 10),
+                child: Text(
+                  'Press Space or Enter to flip',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: SprakTheme.inkSoft, fontSize: 12),
+                ),
+              ),
+            ] else ...[
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: SprakTheme.panel,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: SprakTheme.line),
+                ),
+                child: Column(
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Flexible(
+                          child: TexText(expected,
+                              textAlign: TextAlign.center,
+                              style: SprakTheme.vocab(size: 32),
+                              selectable: true),
+                        ),
+                        if (!_askInTarget && deck.isLanguage) ...[
+                          const SizedBox(width: 8),
+                          IconButton(
+                            icon: const Icon(Icons.volume_up_outlined,
+                                size: 24),
+                            color: SprakTheme.fjord,
+                            tooltip: 'Play audio',
+                            onPressed: () => TtsService().speak(
+                                card.target,
+                                ttsLocaleFor(deck.targetLanguage)),
+                          ),
+                        ],
+                      ],
+                    ),
+                    if (card.notes.isNotEmpty) ...[
+                      const SizedBox(height: 10),
+                      CardNote(
+                        card.notes,
+                        fontSize: 14,
+                        onSpeak:
+                            deck.isLanguage && _noteUtterances.isNotEmpty
+                                ? _speakNotes
+                                : null,
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () => _gradeFlash(false),
+                      icon: const Icon(Icons.close, size: 18),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: error,
+                        side: BorderSide(
+                            color: error.withValues(alpha: 0.5)),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                      ),
+                      label: const Text('Didn’t know  (1)'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: () => _gradeFlash(true),
+                      icon: const Icon(Icons.check, size: 18),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: SprakTheme.success,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                      ),
+                      label: const Text('Knew it  (2)'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
     );
   }
 

@@ -8,7 +8,8 @@ import '../theme.dart';
 import 'tag_chips.dart';
 
 /// Asks which tags to study and how (whole deck / continue / focus on
-/// mistakes), how to answer (multiple choice / typing / both), and which
+/// mistakes), how to answer (multiple choice / typing / both / flash
+/// card), and which
 /// side to be quizzed on (front / back / both), then opens the quiz.
 /// Resuming skips the follow-up questions — the choices are saved in the
 /// session, whose card set is already fixed, so the tag filter is ignored
@@ -257,6 +258,14 @@ Future<void> startLearning(
                     'typing.',
                 onTap: () => Navigator.pop(context, QuizStyle.both),
               ),
+              const SizedBox(height: 10),
+              _ModeTile(
+                icon: Icons.style_outlined,
+                title: 'Flash card',
+                subtitle: 'See one side, flip the card, and say whether '
+                    'you knew it.',
+                onTap: () => Navigator.pop(context, QuizStyle.flashcard),
+              ),
             ],
           ),
         ),
@@ -317,7 +326,9 @@ Future<void> startLearning(
 
     // Typed answers in math/general decks can be judged by AI, since
     // equivalent notation ("0.5" vs "1/2") shouldn't count as wrong.
-    if (!deck.isLanguage && style != QuizStyle.multipleChoice) {
+    if (!deck.isLanguage &&
+        style != QuizStyle.multipleChoice &&
+        style != QuizStyle.flashcard) {
       final picked = await showDialog<GradingMode>(
         context: context,
         builder: (context) => AlertDialog(

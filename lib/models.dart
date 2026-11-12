@@ -190,7 +190,11 @@ enum QuizStyle {
   typing('typing'),
 
   /// Multiple choice plus typing in both directions — all must be cleared.
-  both('both');
+  both('both'),
+
+  /// Self-graded flash cards: one side is shown, the learner flips it and
+  /// says whether they knew the answer.
+  flashcard('flash');
 
   final String id;
   const QuizStyle(this.id);
