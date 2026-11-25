@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models.dart';
 import '../theme.dart';
+import 'shift_enter_newline.dart';
 import 'tag_chips.dart';
 
 /// Prompts for new text, notes and tags for [card]. Returns the trimmed
@@ -31,29 +32,35 @@ Future<({String native, String target, String notes, List<String> tags})?>
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                TextField(
+                ShiftEnterNewline(
                   controller: targetController,
-                  autofocus: true,
-                  decoration: InputDecoration(
-                    labelText: deck.targetLabel,
-                    alignLabelWithHint: true,
+                  child: TextField(
+                    controller: targetController,
+                    autofocus: true,
+                    decoration: InputDecoration(
+                      labelText: deck.targetLabel,
+                      alignLabelWithHint: true,
+                    ),
+                    minLines: 5,
+                    maxLines: 5,
+                    textInputAction: TextInputAction.next,
                   ),
-                  minLines: 5,
-                  maxLines: 5,
-                  textInputAction: TextInputAction.next,
                 ),
                 const SizedBox(height: 14),
-                TextField(
+                ShiftEnterNewline(
                   controller: nativeController,
-                  decoration: InputDecoration(
-                    labelText: deck.nativeLabel,
-                    alignLabelWithHint: true,
+                  child: TextField(
+                    controller: nativeController,
+                    decoration: InputDecoration(
+                      labelText: deck.nativeLabel,
+                      alignLabelWithHint: true,
+                    ),
+                    minLines: 5,
+                    maxLines: 5,
+                    // Enter submits; Shift+Enter inserts a newline.
+                    textInputAction: TextInputAction.done,
+                    onSubmitted: (_) => Navigator.pop(context, true),
                   ),
-                  minLines: 5,
-                  maxLines: 5,
-                  // Enter still submits instead of inserting a newline.
-                  textInputAction: TextInputAction.done,
-                  onSubmitted: (_) => Navigator.pop(context, true),
                 ),
                 const SizedBox(height: 14),
                 TextField(

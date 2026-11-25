@@ -15,6 +15,7 @@ import '../widgets/learn_mode_dialog.dart';
 import '../widgets/manage_tags_dialog.dart';
 import '../widgets/mastery.dart';
 import '../widgets/rename_deck_dialog.dart';
+import '../widgets/shift_enter_newline.dart';
 import '../widgets/tag_chips.dart';
 import '../widgets/tex_text.dart';
 
@@ -594,21 +595,25 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        TextField(
+        ShiftEnterNewline(
           controller: isNative ? _nativeController : _targetController,
-          focusNode: isNative ? _nativeFocus : _targetFocus,
-          decoration: InputDecoration(
-            labelText: isNative ? deck.nativeLabel : deck.targetLabel,
-            alignLabelWithHint: true,
+          child: TextField(
+            controller: isNative ? _nativeController : _targetController,
+            focusNode: isNative ? _nativeFocus : _targetFocus,
+            decoration: InputDecoration(
+              labelText: isNative ? deck.nativeLabel : deck.targetLabel,
+              alignLabelWithHint: true,
+            ),
+            minLines: 5,
+            maxLines: 5,
+            // Enter submits; Shift+Enter inserts a newline (handled by
+            // ShiftEnterNewline before the text input sees it).
+            textInputAction: TextInputAction.done,
+            // Keep focus on submit — the default behavior unfocuses the
+            // field, which swallows rapid Enter presses.
+            onEditingComplete: () {},
+            onSubmitted: (_) => _onSubmit(fromNative: isNative),
           ),
-          minLines: 5,
-          maxLines: 5,
-          // Enter still submits instead of inserting a newline — see below.
-          textInputAction: TextInputAction.done,
-          // Keep focus on submit — the default behavior unfocuses the
-          // field, which swallows rapid Enter presses.
-          onEditingComplete: () {},
-          onSubmitted: (_) => _onSubmit(fromNative: isNative),
         ),
         ..._suggestionsUnder(isNative: isNative),
       ],
